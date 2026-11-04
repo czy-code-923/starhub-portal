@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 import sys
+import re
 from types import SimpleNamespace
 from unittest.mock import patch
 import urllib.request
@@ -19,6 +20,8 @@ spec=importlib.util.spec_from_file_location('manage',ROOT/'scripts/manage.py')
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 version=(ROOT/'VERSION').read_text().strip()
 bundle=(ROOT/'dist'/('starhub-portal-linux-'+m.architecture()+'.zip')).read_bytes()
+# Match the real helper's UMask=0077, including archive extraction permissions.
+os.umask(0o077)
 with tempfile.TemporaryDirectory(prefix='starhub-portal-ci-',dir='/opt') as tmp:
     root=Path(tmp)/'installation'
     args=SimpleNamespace(root=root,port=18088,origin='http://127.0.0.1:18088',bind='127.0.0.1',admin_email='ci@example.test',ask_password=False,version=version)
@@ -31,6 +34,16 @@ with tempfile.TemporaryDirectory(prefix='starhub-portal-ci-',dir='/opt') as tmp:
             req=urllib.request.Request(args.origin+'/portal/v1/'+path,data=None if body is None else json.dumps(body).encode(),headers={'Content-Type':'application/json','Origin':args.origin,'X-CSRF-Token':csrf})
             with opener.open(req,timeout=10) as res:return json.load(res)
         login=call('auth/login',credentials)
+        def check_frontend():
+            with opener.open(args.origin+'/',timeout=10) as res:
+                html=res.read().decode()
+                assert res.status==200 and 'id="app"' in html
+            assets=re.findall(r'(?:src|href)="(/assets/[^\"]+\.(?:js|css))"',html)
+            assert any(x.endswith('.js') for x in assets) and any(x.endswith('.css') for x in assets)
+            for asset in assets:
+                with opener.open(args.origin+asset,timeout=10) as res:
+                    assert res.status==200 and len(res.read())>100
+        check_frontend()
         assert login['user']['role']=='admin' and login['user']['is_owner'] is True
         assert call('me')['csrf']==login['csrf']
         settings=call('admin/settings')
@@ -57,6 +70,7 @@ with tempfile.TemporaryDirectory(prefix='starhub-portal-ci-',dir='/opt') as tmp:
         with patch.object(m,'release',return_value=(future,out.getvalue())),patch.object(m,'health',side_effect=fail_new_health):
             assert m.update(root,future)=='rolled_back'
         assert old_health(root,version)['version']==version
+        check_frontend()
         assert call('admin/announcements')[0]['body']=='Preserve business data across rollback'
         with patch.object(m,'run',wraps=m.run) as run,patch.object(m.shutil,'which',return_value=None):
             m.uninstall(root)
