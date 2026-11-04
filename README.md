@@ -123,7 +123,7 @@ sudo python3 /opt/starhub-portal/scripts/manage.py update
 指定正式版本：
 
 ```sh
-sudo python3 /opt/starhub-portal/scripts/manage.py update --version 0.3.0
+sudo python3 /opt/starhub-portal/scripts/manage.py update --version 0.3.1
 ```
 
 助手未运行时：

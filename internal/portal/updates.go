@@ -134,7 +134,11 @@ func (a *App) updates(w http.ResponseWriter, r *http.Request) error {
 		return e
 	}
 	id := ID()
-	if _, e = tx.Exec(r.Context(), "INSERT INTO jobs(id,kind,subject,payload) VALUES($1,'update',$2,$3)", id, b.Version, payload); e != nil {
+	if e = tx.QueryRow(r.Context(), `INSERT INTO jobs(id,kind,subject,payload) VALUES($1,'update',$2,$3)
+ON CONFLICT(kind,subject) DO UPDATE SET payload=excluded.payload,state='queued',attempts=0,available_at=now(),lease_until=NULL,detail='',updated_at=now()
+WHERE jobs.state IN ('failed','rolled_back') RETURNING id`, id, b.Version, payload).Scan(&id); e == pgx.ErrNoRows {
+		return Problem{409, "该版本更新任务已完成，请刷新版本状态"}
+	} else if e != nil {
 		return e
 	}
 	if e = audit(r.Context(), tx, current(r).ID, "update.request", b.Version); e != nil {
