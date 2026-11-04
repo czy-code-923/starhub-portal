@@ -111,7 +111,7 @@ sudo python3 /opt/starhub-portal/scripts/manage.py update
 指定正式版本：
 
 ```sh
-sudo python3 /opt/starhub-portal/scripts/manage.py update --version 0.2.0
+sudo python3 /opt/starhub-portal/scripts/manage.py update --version 0.2.1
 ```
 
 助手未运行时：
@@ -126,7 +126,7 @@ sudo python3 /opt/starhub-portal/scripts/manage.py repair-helper
 
 初版不包含推广返利、余额钱包、自动退款、跨套餐折算、Telegram 运营机器人；这些属于后续路线，不与现有星枢通知机器人混用。
 
-## 个人收款码、账户与管理权限（0.2.0）
+## 个人收款码、账户与管理权限（0.2.1）
 
 - 主管理员在「收款方式」上传支付宝或微信个人静态收款码，可分别开关、编辑名称与说明。支持 PNG/JPEG，保存时最多 1 MiB。无需支付宝官方应用；官方在线支付仍可独立选配。
 - 用户选择收款方式后展示订单金额和当时的收款码快照；管理员更换二维码不会改变已创建订单的收款信息。用户提交流水或截图只进入「待核款」，不会自动开通。

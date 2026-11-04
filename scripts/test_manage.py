@@ -56,6 +56,8 @@ class InstallerSafety(unittest.TestCase):
                 self.assertIn('starhub-portal', args)
                 self.assertNotIn('--volumes', args)
                 self.assertNotIn('prune', args)
+                self.assertEqual(run.call_args.kwargs['env']['DOCKER_CONFIG'], str(root/'docker-config'))
+                self.assertEqual(run.call_args.kwargs['env']['BUILDX_CONFIG'], str(root/'docker-config/buildx'))
 
     def test_origin_and_environment_validation(self):
         self.assertEqual(m.origin_valid('http://45.129.8.122:18088/'), 'http://45.129.8.122:18088')

@@ -50,9 +50,9 @@ def read_json(path):
     return json.loads(Path(path).read_text(encoding='utf-8'))
 
 
-def run(args, cwd=None, input=None, timeout=600, output=None):
+def run(args, cwd=None, input=None, timeout=600, output=None, env=None):
     result = subprocess.run([str(x) for x in args], cwd=cwd, input=input, stdout=output or subprocess.PIPE,
-                            stderr=subprocess.PIPE, timeout=timeout, check=False)
+                            stderr=subprocess.PIPE, timeout=timeout, check=False, env=env)
     if result.returncode:
         # Persist diagnostics locally; redact values from this installation's secret files.
         detail = result.stderr.decode('utf-8', errors='replace')[-24000:]
@@ -145,8 +145,15 @@ def validate_root(root, require=True):
 
 
 def compose(root, *args, input=None, output=None, timeout=600):
+    # ProtectHome keeps host credentials private. Buildx still needs writable
+    # client state, so keep it inside this installation instead of /root/.docker.
+    config = root / 'docker-config'
+    if config.is_symlink():
+        raise ValueError('Docker client state must not be a symlink')
+    config.mkdir(mode=0o700, exist_ok=True)
+    env = {**os.environ, 'DOCKER_CONFIG': str(config), 'BUILDX_CONFIG': str(config / 'buildx')}
     return run(['docker', 'compose', '--project-name', 'starhub-portal', '--env-file', str(root / 'compose.env'),
-                '-f', str(root / 'compose.yaml'), *args], cwd=root, input=input, output=output, timeout=timeout)
+                '-f', str(root / 'compose.yaml'), *args], cwd=root, input=input, output=output, timeout=timeout, env=env)
 
 
 def environment(path):
@@ -326,6 +333,7 @@ def rollback(root, state):
             (root / 'current').rename(backups / ('failed-' + secrets.token_hex(8)))
         old.rename(root / 'current')
     env_write(root / 'compose.env', state['env'])
+    shutil.copy2(root / 'current' / 'compose.yaml', root / 'compose.yaml')
     shutil.copy2(root / 'current/compose.yaml', root / 'compose.yaml')
     with open(backup, 'rb') as data:
         compose(root, 'exec', '-T', 'db', 'pg_restore', '-U', 'portal', '-d', 'portal', '--clean', '--if-exists', '--no-owner', '--no-acl', input=data.read())
@@ -356,13 +364,13 @@ def update(root, version):
     try:
         with open(backup, 'wb') as out:
             compose(root, 'exec', '-T', 'db', 'pg_dump', '-U', 'portal', '-d', 'portal', '-Fc', output=out)
+        state = {'old': str(old), 'backup': str(backup), 'env': current}
+        for name in ('compose.env', 'portal.env', 'installation.json'):
+            shutil.copy2(root / name, backups / (stamp + '-' + name))
+        write_private(root / 'recovery.json', state)
     except Exception:
         compose(root, 'start', 'app')
         raise
-    state = {'old': str(old), 'backup': str(backup), 'env': current}
-    write_private(root / 'recovery.json', state)
-    for name in ('compose.env', 'portal.env', 'installation.json'):
-        shutil.copy2(root / name, backups / (stamp + '-' + name))
     try:
         (root / 'current').rename(old)
         shutil.copytree(package, root / 'current')

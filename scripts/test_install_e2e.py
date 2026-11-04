@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 import urllib.request
@@ -18,7 +19,7 @@ spec=importlib.util.spec_from_file_location('manage',ROOT/'scripts/manage.py')
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 version=(ROOT/'VERSION').read_text().strip()
 bundle=(ROOT/'dist'/('starhub-portal-linux-'+m.architecture()+'.zip')).read_bytes()
-with tempfile.TemporaryDirectory(prefix='starhub-portal-ci-') as tmp:
+with tempfile.TemporaryDirectory(prefix='starhub-portal-ci-',dir='/opt') as tmp:
     root=Path(tmp)/'installation'
     args=SimpleNamespace(root=root,port=18088,origin='http://127.0.0.1:18088',bind='127.0.0.1',admin_email='ci@example.test',ask_password=False,version=version)
     try:
@@ -35,6 +36,13 @@ with tempfile.TemporaryDirectory(prefix='starhub-portal-ci-') as tmp:
         settings=call('admin/settings')
         assert not settings['secrets']['control_configured']
         assert call('admin/plans')==[]
+        # Reproduce the real helper's systemd restrictions; CLI-only updates do
+        # not catch Buildx trying to write to the protected /root/.docker path.
+        code="import sys;sys.path.insert(0,sys.argv[1]+'/scripts');import manage;from pathlib import Path;manage.compose(Path(sys.argv[1]),'build','app')"
+        m.run(['systemd-run','--quiet','--collect','--wait','--pipe',
+               '-p','ProtectHome=true','-p','ProtectSystem=full','-p','PrivateTmp=true',
+               '-p','NoNewPrivileges=true','-p','ReadWritePaths='+str(root),
+               sys.executable,'-c',code,str(root)])
         m.local(root,'heartbeat',{'status':{'mode':'ci-e2e'}})
         assert m.local(root,'claim',{})['job'] is None
         call('admin/announcements',{'title':'rollback fixture','body':'Preserve business data across rollback','enabled':True},login['csrf'])
