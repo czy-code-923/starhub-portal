@@ -14,6 +14,12 @@ spec.loader.exec_module(m)
 
 
 class InstallerSafety(unittest.TestCase):
+    def test_helper_uses_the_selected_loopback_family(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            for bind,host in [('0.0.0.0','127.0.0.1'),('[::]','[::1]'),('[::1]','[::1]')]:
+                m.env_write(root/'compose.env',{'BIND_IP':bind,'PORTAL_PORT':'19088'})
+                self.assertEqual(m.local_origin(root),'http://'+host+':19088')
     def test_explicit_ip_port_and_separate_domain(self):
         args=SimpleNamespace(ip='198.51.100.20',port=19088,origin='',bind='')
         self.assertEqual(m.install_origins(args),('http://198.51.100.20:19088','http://198.51.100.20:19088','0.0.0.0'))

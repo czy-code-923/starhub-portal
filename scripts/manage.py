@@ -172,12 +172,19 @@ def env_write(path, data):
     write_private(path, ''.join(f'{k}={v}\n' for k, v in data.items()))
 
 
-def health(root, expected=None, timeout=90):
+def local_origin(root):
     env = environment(root / 'compose.env')
+    bind=env.get('BIND_IP','').strip('[]')
+    host='[::1]' if ':' in bind else '127.0.0.1'
+    return 'http://'+host+':'+str(int(env['PORTAL_PORT']))
+
+
+def health(root, expected=None, timeout=90):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         try:
-            with urllib.request.urlopen(f'http://127.0.0.1:{int(env["PORTAL_PORT"])}/portal/v1/health', timeout=3) as res:
+            opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(local_origin(root)+'/portal/v1/health', timeout=3) as res:
                 data = json.load(res)
             if data['status'] == 'ok' and (expected is None or data['version'] == expected):
                 return data
@@ -334,10 +341,10 @@ def install(args):
 
 def local(root, action, body):
     token = environment(root / 'portal.env')['WORKER_TOKEN']
-    port = int(environment(root / 'compose.env')['PORTAL_PORT'])
-    req = urllib.request.Request(f'http://127.0.0.1:{port}/portal/v1/local/{action}', data=json.dumps(body).encode(),
+    req = urllib.request.Request(local_origin(root)+'/portal/v1/local/'+action, data=json.dumps(body).encode(),
                                  headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token})
-    with urllib.request.urlopen(req, timeout=20) as res:
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(req, timeout=20) as res:
         return json.load(res)
 
 
@@ -447,7 +454,7 @@ location / {{
     linked=False
     if payload.get('https') and (root/'scripts/domain_bridge.py').exists():
         import domain_bridge
-        linked=domain_bridge.configure(root,domain,port)
+        linked=domain_bridge.configure(root,domain,port,loopback='::1' if '[' in local_origin(root) else '127.0.0.1')
     free = True
     for number in (80, 443):
         try:

@@ -35,7 +35,7 @@ def control_client(path=Path('/etc/harbor/control.env')):
     return api
 
 
-def configure(root,domain,port,api=None):
+def configure(root,domain,port,api=None,loopback='127.0.0.1'):
     if not re.fullmatch(r'[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?',domain) or '.' not in domain or '..' in domain or not 1024<=port<=65535:
         raise ValueError('Valid domain and application port required')
     api=api or control_client()
@@ -46,7 +46,8 @@ def configure(root,domain,port,api=None):
     certs=[c for c in api('certificates') if c['domain']==domain and not c.get('deleted_at')]
     if len(certs)!=1 or certs[0]['state']!='ready':
         raise ValueError('Create a ready certificate for this domain in Starhub before binding this existing gateway')
-    target='http://127.0.0.1:'+str(port)
+    if loopback not in ('127.0.0.1','::1'):raise ValueError('Only local loopback upstreams are allowed')
+    target='http://'+('['+loopback+']' if ':' in loopback else loopback)+':'+str(port)
     matches=[p for p in api('reverse-proxies') if p['domain']==domain]
     if matches and (len(matches)!=1 or matches[0].get('deleted_at') or matches[0]['upstream']!=target):
         raise ValueError('Existing domain is owned by another upstream; refusing to replace it')
@@ -62,7 +63,7 @@ def configure(root,domain,port,api=None):
     marker=directory/'control-proxy.json'
     if marker.is_symlink():raise ValueError('Unsafe gateway marker')
     fd=os.open(marker,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
-    with os.fdopen(fd,'w') as f:json.dump({'domain':domain,'port':port,'proxy_id':proxy_id},f)
+    with os.fdopen(fd,'w') as f:json.dump({'domain':domain,'port':port,'proxy_id':proxy_id,'upstream':target},f)
     return True
 
 
@@ -76,7 +77,8 @@ def disable(root,api=None):
     proxies=[p for p in api('reverse-proxies') if p['id']==owned['proxy_id']]
     if proxies:
         p=proxies[0]
-        if p['domain']!=owned['domain'] or p['upstream']!='http://127.0.0.1:'+str(owned['port']):
+        expected=owned.get('upstream','http://127.0.0.1:'+str(owned['port']))
+        if expected not in ('http://127.0.0.1:'+str(owned['port']),'http://[::1]:'+str(owned['port'])) or p['domain']!=owned['domain'] or p['upstream']!=expected:
             raise ValueError('Linked proxy changed ownership; refusing to disable it')
         if p['enabled']:
             body={k:p[k] for k in ['domain','upstream','certificate_id','options','version']}

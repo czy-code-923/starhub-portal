@@ -5,6 +5,11 @@ from unittest.mock import Mock
 import domain_bridge as b
 
 class BridgeTests(unittest.TestCase):
+    def test_ipv6_upstream_stays_loopback_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            api=self.api();b.configure(tmp,'buy.example.test',18088,api,loopback='::1')
+            self.assertEqual(api.call_args_list[-1].args[1]['upstream'],'http://[::1]:18088')
+            with self.assertRaises(ValueError):b.configure(tmp,'buy.example.test',18088,api,loopback='2001:db8::1')
     def api(self,proxy=None,domain='buy.example.test'):
         def call(resource,body=None,method=None):
             if resource=='site':return {'domain':'control.example.test'}

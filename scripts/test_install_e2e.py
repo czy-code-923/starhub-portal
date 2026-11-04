@@ -72,6 +72,16 @@ with tempfile.TemporaryDirectory(prefix='starhub-portal-ci-',dir='/opt') as tmp:
         assert old_health(root,version)['version']==version
         check_frontend()
         assert call('admin/announcements')[0]['body']=='Preserve business data across rollback'
+        # Real IPv6-only host publication must keep local health and helper
+        # requests on ::1 rather than assuming an IPv4 published port.
+        original_env=m.environment(root/'compose.env')
+        m.env_write(root/'compose.env',{**original_env,'BIND_IP':'[::1]'})
+        m.compose(root,'up','-d','app')
+        assert m.health(root,version)['version']==version
+        m.local(root,'heartbeat',{'status':{'mode':'ci-ipv6-e2e'}})
+        assert m.local(root,'claim',{})['job'] is None
+        m.env_write(root/'compose.env',original_env)
+        m.compose(root,'up','-d','app');m.health(root,version)
         with patch.object(m,'run',wraps=m.run) as run,patch.object(m.shutil,'which',return_value=None):
             m.uninstall(root)
         assert (root/'data/postgres').exists()
