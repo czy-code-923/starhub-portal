@@ -1,1 +1,31 @@
-{"name":"starhub-portal-web","private":true,"version":"0.2.0","type":"module","scripts":{"dev":"vite --host 127.0.0.1","build":"vue-tsc -b && vite build","test":"vitest run"},"dependencies":{"vue":"^3.5.22"},"devDependencies":{"@vitejs/plugin-vue":"^6.0.1","@vue/test-utils":"^2.4.6","happy-dom":"^21.0.3","typescript":"~5.9.3","vite":"^7.1.12","vitest":"^3.2.4","vue-tsc":"^3.1.1"}}
+{
+  "name": "starhub-portal-web",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vue-tsc -b && vite build",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "vue": "^3.5.22"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.1",
+    "@vue/test-utils": "^2.4.6",
+    "happy-dom": "^21.0.3",
+    "typescript": "~5.9.3",
+    "vite": "^7.1.12",
+    "vitest": "^3.2.4",
+    "vue-tsc": "^3.1.1"
+  },
+  "overrides": {
+    "js-beautify": {
+      "glob": "14.0.3",
+      "editorconfig": {
+        "minimatch": "11.0.4"
+      }
+    }
+  }
+}

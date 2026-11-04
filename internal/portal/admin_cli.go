@@ -30,6 +30,9 @@ func (a *App) ResetAdmin(ctx context.Context, email, password string) error {
 	if _, e = tx.Exec(ctx, "DELETE FROM sessions WHERE customer_id=$1", id); e != nil {
 		return e
 	}
+	if _, e = tx.Exec(ctx, "UPDATE email_tokens SET used_at=now() WHERE customer_id=$1 AND purpose IN ('reset','change_email') AND used_at IS NULL", id); e != nil {
+		return e
+	}
 	if e = audit(ctx, tx, "local-cli", "admin.password-reset", id); e != nil {
 		return e
 	}

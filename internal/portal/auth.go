@@ -383,6 +383,9 @@ func (a *App) reset(w http.ResponseWriter, r *http.Request) error {
 	if _, e = tx.Exec(r.Context(), "DELETE FROM sessions WHERE customer_id=$1", id); e != nil {
 		return e
 	}
+	if _, e = tx.Exec(r.Context(), "UPDATE email_tokens SET used_at=now() WHERE customer_id=$1 AND purpose IN ('reset','change_email') AND used_at IS NULL", id); e != nil {
+		return e
+	}
 	if e = tx.Commit(r.Context()); e != nil {
 		return e
 	}

@@ -130,6 +130,9 @@ func (a *App) team(w http.ResponseWriter, r *http.Request) error {
 		if e == nil {
 			_, e = tx.Exec(ctx, "DELETE FROM sessions WHERE customer_id=$1", id)
 		}
+		if e == nil {
+			_, e = tx.Exec(ctx, "UPDATE email_tokens SET used_at=now() WHERE customer_id=$1 AND purpose IN ('reset','change_email') AND used_at IS NULL", id)
+		}
 	}
 	if e != nil {
 		return e
