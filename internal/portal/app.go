@@ -354,10 +354,18 @@ func (a *App) Handler() http.Handler {
 		}
 		http.ServeFile(w, r, filepath.Join(a.WebDir, "index.html"))
 	}))
-	slots:=make(chan struct{},64)
- return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
- select {case slots<-struct{}{}:defer func(){<-slots}();default:send(w,429,map[string]string{"error":"服务繁忙，请稍后重试"});return}
- ctx,cancel:=context.WithTimeout(r.Context(),25*time.Second);defer cancel();r=r.WithContext(ctx)
+	slots := make(chan struct{}, 64)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case slots <- struct{}{}:
+			defer func() { <-slots }()
+		default:
+			send(w, 429, map[string]string{"error": "服务繁忙，请稍后重试"})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+		defer cancel()
+		r = r.WithContext(ctx)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Frame-Options", "DENY")

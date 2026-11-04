@@ -54,7 +54,18 @@ def run(args, cwd=None, input=None, timeout=600, output=None):
     result = subprocess.run([str(x) for x in args], cwd=cwd, input=input, stdout=output or subprocess.PIPE,
                             stderr=subprocess.PIPE, timeout=timeout, check=False)
     if result.returncode:
-        # Command output may contain credentials. Keep failure messages bounded and generic.
+        # Persist diagnostics locally; redact values from this installation's secret files.
+        detail = result.stderr.decode('utf-8', errors='replace')[-24000:]
+        if cwd:
+            for name in ('compose.env', 'portal.env'):
+                file = Path(cwd) / name
+                if file.is_file():
+                    for value in environment(file).values():
+                        if len(value) >= 8:
+                            detail = detail.replace(value, '[redacted]')
+            write_private(Path(cwd) / 'last-command-error.log', detail)
+        if os.environ.get('GITHUB_ACTIONS') == 'true':
+            print(detail, file=sys.stderr)
         raise RuntimeError(f'{Path(str(args[0])).name} failed (exit {result.returncode}); inspect local service logs')
     return result.stdout or b''
 

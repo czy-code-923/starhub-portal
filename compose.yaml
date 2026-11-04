@@ -30,7 +30,7 @@ services:
     ports: ["${BIND_IP:-0.0.0.0}:${PORTAL_PORT:-18088}:18088"]
     depends_on: {db: {condition: service_healthy}}
     read_only: true
-    tmpfs: [/tmp:size=8m,noexec,nosuid]
+    tmpfs: ["/tmp:size=8m,noexec,nosuid"]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     mem_limit: 256m

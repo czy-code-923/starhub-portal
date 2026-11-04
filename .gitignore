@@ -23,3 +23,5 @@ local-state.json
 *.tsbuildinfo
 recovery.json
 helper.lock
+
+.preview/
