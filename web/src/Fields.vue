@@ -1,0 +1,5 @@
+<script setup lang="ts">
+export type Field={key:string,label:string,type?:string,options?:{value:string,label:string}[],hint?:string,min?:number,max?:number,required?:boolean};
+defineProps<{fields:Field[],model:Record<string,any>}>();
+</script>
+<template><div class="fields"><label v-for="f in fields" :key="f.key" :class="{wide:['textarea','json'].includes(f.type||'')}"><span>{{f.label}}</span><select v-if="f.type==='select'" v-model="model[f.key]"><option v-for="o in f.options" :value="o.value" :key="o.value">{{o.label}}</option></select><textarea v-else-if="f.type==='textarea'||f.type==='json'" v-model="model[f.key]" :rows="f.type==='json'?5:3" :required="f.required" spellcheck="false"/><input v-else-if="f.type==='checkbox'" v-model="model[f.key]" type="checkbox"><input v-else-if="f.type==='number'" v-model.number="model[f.key]" type="number" :min="f.min" :max="f.max" step="any" :required="f.required"><input v-else v-model="model[f.key]" :type="f.type||'text'" :required="f.required" :autocomplete="f.type==='password'?'new-password':undefined"><small v-if="f.hint">{{f.hint}}</small></label></div></template>

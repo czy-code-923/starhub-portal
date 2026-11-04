@@ -1,0 +1,9 @@
+.git
+web/node_modules
+data
+backups
+downloads
+dist
+*.env
+credentials.json
+installation.json

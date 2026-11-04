@@ -1,0 +1,77 @@
+name: Verify and release Starhub Portal
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: portal-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: portal_test
+          POSTGRES_PASSWORD: ci-isolated-test-password
+          POSTGRES_DB: portal_test
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U portal_test -d portal_test" --health-interval 3s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: '1.27.3'}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Verify business invariants against isolated PostgreSQL
+        env:
+          TEST_DATABASE_URL: postgres://portal_test:ci-isolated-test-password@127.0.0.1:5432/portal_test?sslmode=disable
+        run: |
+          go vet ./...
+          go test -race -count=1 ./...
+          python3 scripts/test_manage.py
+          python3 -m py_compile scripts/manage.py scripts/package.py
+          cd web
+          npm ci --no-audit --no-fund
+          npm test
+          npm run build
+      - name: Build runtime and full source packages
+        run: python3 scripts/package.py
+      - name: Verify actual Docker installation and non-destructive uninstall
+        run: sudo --preserve-env=GITHUB_ACTIONS python3 scripts/test_install_e2e.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: portal-release-packages
+          path: dist/*
+          retention-days: 7
+  publish:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {name: portal-release-packages, path: dist}
+      - name: Publish immutable verified version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(cat VERSION)
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$version" >/tmp/portal-existing-release.json 2>/tmp/portal-release-error; then
+            echo 'Existing release preserved. Increment VERSION for the next release.'
+            exit 0
+          elif ! grep -q 'HTTP 404' /tmp/portal-release-error; then
+            cat /tmp/portal-release-error >&2
+            exit 1
+          fi
+          gh release create "v$version" dist/* --target "$GITHUB_SHA" --title "星枢用户中心 $version" --notes-file "docs/RELEASE-$version.md" --latest

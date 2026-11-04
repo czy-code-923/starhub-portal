@@ -1,0 +1,14 @@
+import type {Field} from './Fields.vue';
+const f=(key:string,label:string,type='text',hint=''):Field=>({key,label,type,hint});
+const select=(key:string,label:string,values:string[]):Field=>({key,label,type:'select',options:values.map(x=>({value:x,label:x}))});
+const times=[f('starts_at','开始时间','datetime-local'),f('ends_at','结束时间','datetime-local')];
+export const fields:Record<string,Field[]>={
+categories:[f('name','分类名称'),f('description','说明','textarea'),f('sort','排序','number'),f('enabled','启用','checkbox')],
+plans:[f('name','套餐名称'),f('description','套餐说明','textarea'),select('category_id','套餐分类',[]),f('quota_gb','每月流量 GB','number'),f('max_devices','设备上限 · 0 为不限制','number'),select('billing_mode','计费方向',['both','uplink','downlink','max']),f('multiplier_milli','倍率千分值 · 1000 为 1 倍','number'),f('stock','销售名额 · 0 为不限','number'),f('sort','排序','number'),...times,f('recommend_starts_at','推荐开始','datetime-local'),f('recommend_ends_at','推荐结束','datetime-local'),f('enabled','上架','checkbox'),f('recommended','推荐','checkbox'),f('allow_new','允许首次购买','checkbox'),f('allow_renew','允许续费','checkbox')],
+coupons:[f('name','优惠名称'),f('code','优惠码'),select('kind','优惠类型',['fixed','percent']),f('amount','减免值 · 固定为分 / 比例为基点','number','1000 基点 = 减免 10%；固定 1000 分 = 减免 ¥10'),f('minimum','最低订单金额（分）','number'),f('maximum_discount','最高减免（分）· 0 为不限','number'),f('max_uses','总次数 · 0 为不限','number'),f('per_customer','每人次数','number'),...times,f('enabled','启用','checkbox'),f('new_only','仅首次购买','checkbox'),f('plan_ids','适用套餐 ID','json','JSON 数组，[] 表示不限'),f('price_ids','适用周期 ID','json'),f('customer_ids','适用用户 ID','json')],
+invitations:[f('email','限制邮箱 · 留空则不限','text'),f('max_uses','名额','number'),...times,f('enabled','启用','checkbox')],
+announcements:[f('title','标题'),f('body','公告内容','textarea'),f('enabled','显示','checkbox')]
+};
+const local=(d:Date)=>new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,16);
+export function defaults(kind:string){const now=new Date(),end=new Date(now.getTime()+365*864e5);return {name:'',description:'',enabled:kind!=='plans',sort:0,starts_at:local(now),ends_at:local(end),recommend_starts_at:local(now),recommend_ends_at:local(end),recommended:false,quota_gb:100,max_devices:3,billing_mode:'both',multiplier_milli:1000,stock:0,allow_new:true,allow_renew:true,group_ids:[],protocols:[],prices:[{id:'MONTH',months:1,amount:1000,enabled:true}],kind:'fixed',amount:1000,minimum:0,maximum_discount:0,max_uses:0,per_customer:1,new_only:false,plan_ids:'[]',price_ids:'[]',customer_ids:'[]',max_uses_invite:1,email:'',title:'',body:''} as Record<string,any>}
+export const localDate=local;

@@ -1,0 +1,43 @@
+name: starhub-portal
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: portal
+      POSTGRES_USER: portal
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?required}
+    command: [postgres, -c, shared_buffers=32MB, -c, max_connections=30, -c, work_mem=2MB, -c, maintenance_work_mem=32MB]
+    volumes: ["./data/postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U portal -d portal]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    mem_limit: 512m
+    cpus: 1
+    logging: {driver: json-file, options: {max-size: 5m, max-file: "3"}}
+    networks: [private]
+  app:
+    image: starhub-portal-local:${PORTAL_VERSION:-0.1.0}
+    build: {context: "./current", dockerfile: Runtime.Dockerfile}
+    restart: unless-stopped
+    env_file: ["./portal.env"]
+    environment:
+      DATABASE_URL: postgres://portal:${DB_PASSWORD:?required}@db:5432/portal?sslmode=disable
+      LISTEN_ADDR: 0.0.0.0:18088
+      WEB_DIR: /app/web
+    ports: ["${BIND_IP:-0.0.0.0}:${PORTAL_PORT:-18088}:18088"]
+    depends_on: {db: {condition: service_healthy}}
+    read_only: true
+    tmpfs: [/tmp:size=8m,noexec,nosuid]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpus: 1
+    pids_limit: 100
+    logging: {driver: json-file, options: {max-size: 5m, max-file: "3"}}
+    networks: [private, outbound]
+networks:
+  private: {internal: true}
+  outbound: {}
