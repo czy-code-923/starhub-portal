@@ -27,7 +27,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const Version = "0.1.1"
+const Version = "0.2.0"
 const Repository = "czy-code-923/starhub-portal"
 
 //go:embed migrations/*.sql
@@ -222,11 +222,13 @@ func wrap(fn endpoint) http.HandlerFunc {
 }
 
 type actor struct {
-	ID    string `json:"id"`
-	Email string `json:"email"`
-	Name  string `json:"name"`
-	Role  string `json:"role"`
-	CSRF  string `json:"-"`
+	ID     string   `json:"id"`
+	Email  string   `json:"email"`
+	Name   string   `json:"name"`
+	Role   string   `json:"role"`
+	Owner  bool     `json:"is_owner"`
+	Scopes []string `json:"admin_scopes"`
+	CSRF   string   `json:"-"`
 }
 type actorKey struct{}
 
@@ -239,7 +241,7 @@ func (a *App) auth(fn endpoint, admin bool) http.HandlerFunc {
 		}
 		var u actor
 		var csrf string
-		e = a.DB.QueryRow(r.Context(), `SELECT c.id,c.email,c.name,c.role,s.csrf_hash FROM sessions s JOIN customers c ON c.id=s.customer_id WHERE s.token_hash=$1 AND s.expires_at>$2 AND c.status='active'`, hash(c.Value), a.now()).Scan(&u.ID, &u.Email, &u.Name, &u.Role, &csrf)
+		e = a.DB.QueryRow(r.Context(), `SELECT c.id,c.email,c.name,c.role,c.is_owner,c.admin_scopes,s.csrf_hash FROM sessions s JOIN customers c ON c.id=s.customer_id WHERE s.token_hash=$1 AND s.expires_at>$2 AND c.status='active'`, hash(c.Value), a.now()).Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.Owner, &u.Scopes, &csrf)
 		if e != nil {
 			return Problem{401, "登录已失效"}
 		}
@@ -314,6 +316,26 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("POST /portal/v1/auth/forgot", wrap(a.forgot))
 	m.HandleFunc("POST /portal/v1/auth/reset", wrap(a.reset))
 	m.HandleFunc("GET /portal/v1/me", a.auth(a.me, false))
+	m.HandleFunc("GET /portal/v1/me/profile", a.auth(a.profile, false))
+	m.HandleFunc("PUT /portal/v1/me/profile", a.auth(a.profile, false))
+	m.HandleFunc("PUT /portal/v1/me/password", a.auth(a.changePassword, false))
+	m.HandleFunc("POST /portal/v1/auth/verify-email", wrap(a.verifyNewEmail))
+	m.HandleFunc("GET /portal/v1/payment-methods", a.auth(a.paymentMethods, false))
+	m.HandleFunc("GET /portal/v1/orders/{id}/payment", a.auth(a.manualStatus, false))
+	m.HandleFunc("POST /portal/v1/orders/{id}/receipt", a.auth(a.submitReceipt, false))
+	m.HandleFunc("GET /portal/v1/orders/{id}/payment-code", a.auth(a.manualImage, false))
+	m.HandleFunc("GET /portal/v1/orders/{id}/receipt", a.auth(a.manualImage, false))
+	for _, method := range []string{"GET", "POST", "PUT"} {
+		m.HandleFunc(method+" /portal/v1/admin/administrators", a.auth(a.team, true))
+	}
+	m.HandleFunc("GET /portal/v1/admin/payment-methods", a.auth(a.configurePaymentMethods, true))
+	m.HandleFunc("PUT /portal/v1/admin/payment-methods", a.auth(a.configurePaymentMethods, true))
+	m.HandleFunc("GET /portal/v1/admin/payment-methods/{id}/image", a.auth(a.methodImage, true))
+	m.HandleFunc("GET /portal/v1/admin/manual-payments", a.auth(a.reviewPayments, true))
+	m.HandleFunc("GET /portal/v1/admin/manual-payments/{id}", a.auth(a.reviewPayments, true))
+	m.HandleFunc("PUT /portal/v1/admin/manual-payments/{id}", a.auth(a.reviewPayments, true))
+	m.HandleFunc("POST /portal/v1/admin/demo-plans", a.auth(a.demoPlans, true))
+
 	m.HandleFunc("POST /portal/v1/auth/logout", a.auth(a.logout, false))
 	m.HandleFunc("GET /portal/v1/catalog", wrap(a.catalog))
 	m.HandleFunc("POST /portal/v1/checkout/quote", a.auth(a.quote, false))

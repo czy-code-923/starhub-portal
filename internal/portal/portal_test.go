@@ -83,6 +83,10 @@ func setup(t *testing.T) *fixture {
 		t.Fatal(e)
 	}
 	f.admin = f.user("owner@example.test", "admin")
+	f.admin.Owner = true
+	if _, e = a.DB.Exec(ctx, "UPDATE customers SET is_owner=true WHERE id=$1", f.admin.ID); e != nil {
+		t.Fatal(e)
+	}
 	f.customer = f.user("one@example.test", "customer")
 	f.other = f.user("two@example.test", "customer")
 	return f
@@ -198,7 +202,7 @@ func TestInviteRaceVerificationAndReplay(t *testing.T) {
 		wg.Add(1)
 		go func(email string) {
 			defer wg.Done()
-			w := f.req("POST", "auth/register", map[string]string{"email": email, "name": "test", "password": "test-invite-password", "invitation": code}, nil, false)
+			w := f.req("POST", "auth/register", map[string]string{"email": email, "name": "test", "password": "test-invite-password", "password_confirm": "test-invite-password", "invitation": code}, nil, false)
 			status <- w.Code
 		}(email)
 	}

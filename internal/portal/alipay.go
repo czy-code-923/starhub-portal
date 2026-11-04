@@ -156,6 +156,26 @@ func (a *App) params(c AlipayConfig, method string, biz any) url.Values {
 	return url.Values{"app_id": {c.AppID}, "method": {method}, "format": {"JSON"}, "charset": {"utf-8"}, "sign_type": {"RSA2"}, "timestamp": {a.now().In(china).Format("2006-01-02 15:04:05")}, "version": {"1.0"}, "biz_content": {string(raw(biz))}}
 }
 func (a *App) pay(w http.ResponseWriter, r *http.Request) error {
+	var choice struct {
+		Method string `json:"method_id"`
+	}
+	if e := decode(w, r, &choice); e != nil {
+		return e
+	}
+	if choice.Method != "" && choice.Method != "alipay_official" {
+		if !includes([]string{"alipay_static", "wechat_static"}, choice.Method) {
+			return bad("未知收款方式")
+		}
+		return a.beginManualPayment(w, r, choice.Method)
+	}
+	var manual bool
+	if e := a.DB.QueryRow(r.Context(), "SELECT EXISTS(SELECT 1 FROM manual_payments m JOIN orders o ON o.id=m.order_id WHERE o.id=$1 AND o.customer_id=$2)", r.PathValue("id"), current(r).ID).Scan(&manual); e != nil {
+		return e
+	}
+	if manual {
+		return Problem{409, "此订单已绑定个人收款码，请使用原方式或重新下单"}
+	}
+
 	if e := a.limit(r, "pay", 30); e != nil {
 		return e
 	}
@@ -180,6 +200,12 @@ func (a *App) pay(w http.ResponseWriter, r *http.Request) error {
 	defer tx.Rollback(r.Context())
 	if e = lock(r.Context(), tx); e != nil {
 		return e
+	}
+	if e = tx.QueryRow(r.Context(), "SELECT EXISTS(SELECT 1 FROM manual_payments WHERE order_id=$1)", r.PathValue("id")).Scan(&manual); e != nil {
+		return e
+	}
+	if manual {
+		return Problem{409, "订单已经绑定个人收款码"}
 	}
 	var amount int64
 	var state, name string

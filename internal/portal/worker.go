@@ -207,6 +207,10 @@ func (a *App) sendJobMail(ctx context.Context, payload []byte) error {
 	if purpose == "reset" {
 		subject, fragment = "重设你的星枢账户密码", "reset"
 	}
+	if purpose == "change_email" {
+		subject = "验证你的新邮箱"
+		fragment = "verify-email"
+	}
 	body := "请打开以下链接完成操作。请勿转发此链接：\r\n" + origin + "/#" + fragment + "=" + p["token"] + "\r\n如果不是你本人发起，请忽略此邮件。"
 	if a.Mail != nil {
 		return a.Mail(ctx, p["email"], subject, body)
@@ -309,7 +313,10 @@ func (a *App) cleanup(ctx context.Context) error {
 	if _, e = tx.Exec(ctx, "DELETE FROM rate_limits WHERE reset_at<$1", a.now().Add(-time.Hour)); e != nil {
 		return e
 	}
-	if _, e = tx.Exec(ctx, "UPDATE orders o SET state='cancelled' WHERE state='pending' AND expires_at<=$1 AND NOT EXISTS(SELECT 1 FROM payments p WHERE p.order_id=o.id)", a.now()); e != nil {
+	if _, e = tx.Exec(ctx, "UPDATE orders o SET state='cancelled' WHERE state='pending' AND expires_at<=$1 AND NOT EXISTS(SELECT 1 FROM payments p WHERE p.order_id=o.id) AND NOT EXISTS(SELECT 1 FROM manual_payments m WHERE m.order_id=o.id AND m.state='submitted' AND m.review_deadline>$1)", a.now()); e != nil {
+		return e
+	}
+	if _, e = tx.Exec(ctx, "UPDATE manual_payments m SET state='cancelled',review_note=CASE WHEN m.state='submitted' THEN '审核期已过，请通过工单联系管理员核实' ELSE m.review_note END,version=m.version+1 FROM orders o WHERE o.id=m.order_id AND o.state='cancelled' AND m.state IN ('awaiting','submitted','rejected')"); e != nil {
 		return e
 	}
 	return tx.Commit(ctx)

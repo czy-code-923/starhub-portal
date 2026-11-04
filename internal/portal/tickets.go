@@ -48,7 +48,7 @@ func (a *App) tickets(w http.ResponseWriter, r *http.Request) error {
 func (a *App) ticket(w http.ResponseWriter, r *http.Request) error {
 	u := current(r)
 	var state string
-	if e := a.DB.QueryRow(r.Context(), "SELECT state FROM tickets WHERE id=$1 AND (customer_id=$2 OR $3)", r.PathValue("id"), u.ID, u.Role == "admin").Scan(&state); e != nil {
+	if e := a.DB.QueryRow(r.Context(), "SELECT state FROM tickets WHERE id=$1 AND (customer_id=$2 OR $3)", r.PathValue("id"), u.ID, u.can("support")).Scan(&state); e != nil {
 		return e
 	}
 	if r.Method == "GET" {

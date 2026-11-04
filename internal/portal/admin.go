@@ -4,13 +4,24 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-	"time"
 )
 
 var couponPattern = regexp.MustCompile(`^[A-Z0-9_-]{4,32}$`)
 var domainPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$`)
 
 func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
+	if kind == "settings" || kind == "version" {
+		if e := requireOwner(r); e != nil {
+			return e
+		}
+	} else {
+		if e := requireAdminScope(r, adminResourceScope(kind)); e != nil {
+			return e
+		}
+	}
+	if kind == "invitations" {
+		return a.manageInvitations(w, r)
+	}
 	if kind == "settings" {
 		return a.adminSettings(w, r)
 	}
@@ -34,8 +45,8 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 			"plans":         `SELECT COALESCE(jsonb_agg(p ORDER BY p.sort,p.name),'[]') FROM plans p`,
 			"coupons":       `SELECT COALESCE(jsonb_agg(c),'[]') FROM coupons c`,
 			"invitations":   `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,prefix,email,enabled,starts_at,ends_at,max_uses,claimed,created_at FROM invitations ORDER BY created_at DESC LIMIT 200)x`,
-			"customers":     `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,email,name,role,status,created_at,email_verified_at FROM customers ORDER BY created_at DESC LIMIT 500)x`,
-			"orders":        `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT o.*,c.email FROM orders o JOIN customers c ON c.id=o.customer_id ORDER BY o.created_at DESC LIMIT 300)x`,
+			"customers":     `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,email,name,role,status,created_at,email_verified_at FROM customers WHERE role='customer' ORDER BY created_at DESC LIMIT 500)x`,
+			"orders":        `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT o.*,(SELECT m.state FROM manual_payments m WHERE m.order_id=o.id) manual_state,c.email FROM orders o JOIN customers c ON c.id=o.customer_id ORDER BY o.created_at DESC LIMIT 300)x`,
 			"jobs":          `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,kind,subject,state,attempts,available_at,detail,updated_at FROM jobs ORDER BY created_at DESC LIMIT 200)x`,
 			"announcements": `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT * FROM announcements ORDER BY created_at DESC LIMIT 50)x`,
 			"tickets":       `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT t.*,c.email FROM tickets t JOIN customers c ON c.id=t.customer_id ORDER BY t.created_at DESC LIMIT 200)x`,
@@ -96,7 +107,7 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 		if e = decode(w, r, &b); e != nil {
 			return e
 		}
-		if strings.TrimSpace(b.Name) == "" || !cleanText(b.Name, 80) || !cleanText(b.Description, 2000) || b.CategoryID == "" || b.Quota < 1 || b.Quota > 9000000000000000 || len(b.Groups) < 1 || len(b.Groups) > 8 || len(b.Protocols) < 1 || len(b.Protocols) > 32 || len(b.Prices) < 1 || len(b.Prices) > 12 || b.MaxDevices < 0 || b.MaxDevices > 20 || b.Multiplier < 1 || b.Multiplier > 100000 || !includes([]string{"both", "uplink", "downlink", "max"}, b.Billing) || !b.Ends.After(b.Starts) || !b.RecommendEnds.After(b.RecommendStarts) || b.Stock < 0 {
+		if strings.TrimSpace(b.Name) == "" || !cleanText(b.Name, 80) || !cleanText(b.Description, 2000) || b.CategoryID == "" || b.Quota < 1 || b.Quota > 9000000000000000 || (!b.Simulation && (len(b.Groups) < 1 || len(b.Protocols) < 1)) || len(b.Groups) > 8 || len(b.Protocols) > 32 || len(b.Prices) < 1 || len(b.Prices) > 12 || b.MaxDevices < 0 || b.MaxDevices > 20 || b.Multiplier < 1 || b.Multiplier > 100000 || !includes([]string{"both", "uplink", "downlink", "max"}, b.Billing) || !b.Ends.After(b.Starts) || !b.RecommendEnds.After(b.RecommendStarts) || b.Stock < 0 {
 			return bad("套餐参数无效，请检查额度、价格、销售期与用户组")
 		}
 		seen := map[string]bool{}
@@ -106,7 +117,7 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 			}
 			seen[p.ID] = true
 		}
-		if b.Enabled {
+		if b.Enabled && !b.Simulation {
 			if e = a.checkGroups(r.Context(), b.Groups, b.Protocols); e != nil {
 				return e
 			}
@@ -114,9 +125,9 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 		id = b.ID
 		if id == "" {
 			id = ID()
-			_, e = tx.Exec(r.Context(), `INSERT INTO plans(id,category_id,name,description,enabled,recommended,sort,starts_at,ends_at,recommend_starts_at,recommend_ends_at,quota_bytes,group_ids,protocols,prices,max_devices,billing_mode,multiplier_milli,stock,allow_new,allow_renew) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`, id, b.CategoryID, b.Name, b.Description, b.Enabled, b.Recommended, b.Sort, b.Starts, b.Ends, b.RecommendStarts, b.RecommendEnds, b.Quota, raw(b.Groups), raw(b.Protocols), raw(b.Prices), b.MaxDevices, b.Billing, b.Multiplier, b.Stock, b.AllowNew, b.AllowRenew)
+			_, e = tx.Exec(r.Context(), `INSERT INTO plans(id,category_id,name,description,enabled,recommended,sort,starts_at,ends_at,recommend_starts_at,recommend_ends_at,quota_bytes,group_ids,protocols,prices,max_devices,billing_mode,multiplier_milli,stock,allow_new,allow_renew,simulation) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`, id, b.CategoryID, b.Name, b.Description, b.Enabled, b.Recommended, b.Sort, b.Starts, b.Ends, b.RecommendStarts, b.RecommendEnds, b.Quota, raw(b.Groups), raw(b.Protocols), raw(b.Prices), b.MaxDevices, b.Billing, b.Multiplier, b.Stock, b.AllowNew, b.AllowRenew, b.Simulation)
 		} else {
-			tag, err := tx.Exec(r.Context(), `UPDATE plans SET category_id=$3,name=$4,description=$5,enabled=$6,recommended=$7,sort=$8,starts_at=$9,ends_at=$10,recommend_starts_at=$11,recommend_ends_at=$12,quota_bytes=$13,group_ids=$14,protocols=$15,prices=$16,max_devices=$17,billing_mode=$18,multiplier_milli=$19,stock=$20,allow_new=$21,allow_renew=$22,version=version+1 WHERE id=$1 AND version=$2`, id, b.Version, b.CategoryID, b.Name, b.Description, b.Enabled, b.Recommended, b.Sort, b.Starts, b.Ends, b.RecommendStarts, b.RecommendEnds, b.Quota, raw(b.Groups), raw(b.Protocols), raw(b.Prices), b.MaxDevices, b.Billing, b.Multiplier, b.Stock, b.AllowNew, b.AllowRenew)
+			tag, err := tx.Exec(r.Context(), `UPDATE plans SET category_id=$3,name=$4,description=$5,enabled=$6,recommended=$7,sort=$8,starts_at=$9,ends_at=$10,recommend_starts_at=$11,recommend_ends_at=$12,quota_bytes=$13,group_ids=$14,protocols=$15,prices=$16,max_devices=$17,billing_mode=$18,multiplier_milli=$19,stock=$20,allow_new=$21,allow_renew=$22,simulation=$23,version=version+1 WHERE id=$1 AND version=$2`, id, b.Version, b.CategoryID, b.Name, b.Description, b.Enabled, b.Recommended, b.Sort, b.Starts, b.Ends, b.RecommendStarts, b.RecommendEnds, b.Quota, raw(b.Groups), raw(b.Protocols), raw(b.Prices), b.MaxDevices, b.Billing, b.Multiplier, b.Stock, b.AllowNew, b.AllowRenew, b.Simulation)
 			e = err
 			if e == nil && tag.RowsAffected() != 1 {
 				return Problem{409, "套餐已变化，请刷新"}
@@ -141,35 +152,6 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 			if e == nil && tag.RowsAffected() != 1 {
 				return Problem{409, "优惠码已变化，请刷新"}
 			}
-		}
-	case "invitations":
-		var b struct {
-			ID      string    `json:"id"`
-			Email   string    `json:"email"`
-			Enabled bool      `json:"enabled"`
-			Starts  time.Time `json:"starts_at"`
-			Ends    time.Time `json:"ends_at"`
-			Max     int       `json:"max_uses"`
-		}
-		if e = decode(w, r, &b); e != nil {
-			return e
-		}
-		if b.Email != "" {
-			if b.Email, e = emailAddress(b.Email); e != nil {
-				return e
-			}
-		}
-		if b.Max < 1 || b.Max > 10000 || !b.Ends.After(b.Starts) {
-			return bad("邀请码时间和名额无效")
-		}
-		id = b.ID
-		if id == "" {
-			id = ID()
-			code := ID() + ID()
-			_, e = tx.Exec(r.Context(), `INSERT INTO invitations(id,code_hash,prefix,email,enabled,starts_at,ends_at,max_uses) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, id, hash(code), code[:8], b.Email, b.Enabled, b.Starts, b.Ends, b.Max)
-			response = map[string]any{"id": id, "code": code, "notice": "邀请码仅此一次完整显示，请妥善保存"}
-		} else {
-			_, e = tx.Exec(r.Context(), "UPDATE invitations SET email=$2,enabled=$3,starts_at=$4,ends_at=$5,max_uses=$6 WHERE id=$1 AND claimed<=$6", id, b.Email, b.Enabled, b.Starts, b.Ends, b.Max)
 		}
 	case "customers":
 		var b struct {
@@ -267,7 +249,7 @@ func (a *App) adminSettings(w http.ResponseWriter, r *http.Request) error {
 		return e
 	}
 	n := b.Settings
-	if strings.TrimSpace(n.Title) == "" || !cleanText(n.Title, 40) || !includes([]string{"closed", "invite", "allowlist"}, n.RegistrationMode) || !includes([]string{"GB", "GiB", "auto"}, n.TrafficUnit) || n.RegistrationLimit < 1 || n.RegistrationLimit > 500 || len(n.Allowlist) > 100 {
+	if strings.TrimSpace(n.Title) == "" || !cleanText(n.Title, 40) || !includes([]string{"closed", "invite", "allowlist", "email"}, n.RegistrationMode) || !includes([]string{"GB", "GiB", "auto"}, n.TrafficUnit) || n.RegistrationLimit < 1 || n.RegistrationLimit > 500 || len(n.Allowlist) > 100 {
 		return bad("站点设置无效")
 	}
 	if n.Domain != "" && (!domainPattern.MatchString(n.Domain) || !strings.Contains(n.Domain, ".") || strings.Contains(n.Domain, "..")) {

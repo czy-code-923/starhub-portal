@@ -83,7 +83,7 @@ func (a *App) Bootstrap(ctx context.Context, email, password string) error {
 	if count != 0 {
 		return errorsNew("管理员已存在，请使用受控密码恢复命令")
 	}
-	_, e = tx.Exec(ctx, `INSERT INTO customers(id,email,name,password_hash,role,status,email_verified_at) VALUES($1,$2,'管理员',$3,'admin','active',now())`, ID(), email, encoded)
+	_, e = tx.Exec(ctx, `INSERT INTO customers(id,email,name,password_hash,role,status,email_verified_at,is_owner) VALUES($1,$2,'管理员',$3,'admin','active',now(),true)`, ID(), email, encoded)
 	if e != nil {
 		return e
 	}
@@ -104,7 +104,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) error {
 	email, _ := emailAddress(b.Email)
 	var u actor
 	var encoded, status string
-	e := a.DB.QueryRow(r.Context(), "SELECT id,email,name,role,password_hash,status FROM customers WHERE email=$1", email).Scan(&u.ID, &u.Email, &u.Name, &u.Role, &encoded, &status)
+	e := a.DB.QueryRow(r.Context(), "SELECT id,email,name,role,is_owner,admin_scopes,password_hash,status FROM customers WHERE email=$1", email).Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.Owner, &u.Scopes, &encoded, &status)
 	if e != nil {
 		_, _ = passwordHash("invalid-login-dummy-credential")
 		return Problem{401, "邮箱或密码不正确"}
@@ -112,13 +112,31 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) error {
 	if !passwordOK(encoded, b.Password) {
 		return Problem{401, "邮箱或密码不正确"}
 	}
+	// Serialize session creation with account changes. An in-flight login using an
+	// old password must not create a fresh session after password reset/disable.
+	tx, e := a.DB.Begin(r.Context())
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback(r.Context())
+	if e = lock(r.Context(), tx); e != nil {
+		return e
+	}
+	var latestHash string
+	e = tx.QueryRow(r.Context(), "SELECT password_hash,status,is_owner,admin_scopes,email,name,role FROM customers WHERE id=$1 FOR UPDATE", u.ID).Scan(&latestHash, &status, &u.Owner, &u.Scopes, &u.Email, &u.Name, &u.Role)
+	if e != nil || latestHash != encoded {
+		return Problem{401, "账户信息已变更，请重新登录"}
+	}
 	if status != "active" {
 		return Problem{403, map[string]string{"unverified": "请先验证邮箱", "pending": "账户正在等待审核", "disabled": "账户已停用", "expired": "注册验证已过期，请联系管理员"}[status]}
 	}
 	token := ID() + ID()
 	csrf := a.csrf(token)
-	_, e = a.DB.Exec(r.Context(), "INSERT INTO sessions(token_hash,customer_id,csrf_hash,expires_at) VALUES($1,$2,$3,$4)", hash(token), u.ID, hash(csrf), a.now().Add(24*time.Hour))
+	_, e = tx.Exec(r.Context(), "INSERT INTO sessions(token_hash,customer_id,csrf_hash,expires_at) VALUES($1,$2,$3,$4)", hash(token), u.ID, hash(csrf), a.now().Add(24*time.Hour))
 	if e != nil {
+		return e
+	}
+	if e = tx.Commit(r.Context()); e != nil {
 		return e
 	}
 	http.SetCookie(w, &http.Cookie{Name: "sp_session", Value: token, Path: "/", HttpOnly: true, Secure: strings.HasPrefix(r.Header.Get("Origin"), "https://") || r.TLS != nil, SameSite: http.SameSiteLaxMode, MaxAge: 86400})
@@ -149,6 +167,7 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) error {
 		Email      string `json:"email"`
 		Name       string `json:"name"`
 		Password   string `json:"password"`
+		Confirm    string `json:"password_confirm"`
 		Invitation string `json:"invitation"`
 	}
 	if e := decode(w, r, &b); e != nil {
@@ -157,6 +176,9 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) error {
 	email, e := emailAddress(b.Email)
 	if e != nil {
 		return e
+	}
+	if b.Password != b.Confirm {
+		return bad("两次输入的密码不一致")
 	}
 	if len(strings.TrimSpace(b.Name)) == 0 || !cleanText(b.Name, 80) {
 		return bad("请填写有效昵称")
@@ -230,7 +252,11 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) error {
 }
 func (a *App) queueToken(ctx context.Context, tx pgx.Tx, id, email, purpose string, ttl time.Duration) error {
 	token := ID() + ID()
-	if _, e := tx.Exec(ctx, "INSERT INTO email_tokens(id,customer_id,purpose,token_hash,expires_at) VALUES($1,$2,$3,$4,$5)", ID(), id, purpose, hash(token), a.now().Add(ttl)); e != nil {
+	pending := ""
+	if purpose == "change_email" {
+		pending = email
+	}
+	if _, e := tx.Exec(ctx, "INSERT INTO email_tokens(id,customer_id,purpose,token_hash,expires_at,pending_email) VALUES($1,$2,$3,$4,$5,$6)", ID(), id, purpose, hash(token), a.now().Add(ttl), pending); e != nil {
 		return e
 	}
 	payload, e := a.seal(map[string]string{"email": email, "purpose": purpose, "token": token})
@@ -259,6 +285,9 @@ func (a *App) verify(w http.ResponseWriter, r *http.Request) error {
 		return e
 	}
 	defer tx.Rollback(r.Context())
+	if e = lock(r.Context(), tx); e != nil {
+		return e
+	}
 	if e = lock(r.Context(), tx); e != nil {
 		return e
 	}
@@ -324,9 +353,13 @@ func (a *App) reset(w http.ResponseWriter, r *http.Request) error {
 	var b struct {
 		Token    string `json:"token"`
 		Password string `json:"password"`
+		Confirm  string `json:"password_confirm"`
 	}
 	if e := decode(w, r, &b); e != nil {
 		return e
+	}
+	if b.Password != b.Confirm {
+		return bad("两次输入的密码不一致")
 	}
 	encoded, e := passwordHash(b.Password)
 	if e != nil {
@@ -337,6 +370,9 @@ func (a *App) reset(w http.ResponseWriter, r *http.Request) error {
 		return e
 	}
 	defer tx.Rollback(r.Context())
+	if e = lock(r.Context(), tx); e != nil {
+		return e
+	}
 	var id string
 	if e = tx.QueryRow(r.Context(), `UPDATE email_tokens SET used_at=$2 WHERE token_hash=$1 AND purpose='reset' AND used_at IS NULL AND expires_at>$2 RETURNING customer_id`, hash(b.Token), a.now()).Scan(&id); e != nil {
 		return bad("恢复链接无效或已过期")

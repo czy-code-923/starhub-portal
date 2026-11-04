@@ -23,3 +23,10 @@
 本机 `/local/*` API 仅供受限宿主机助手使用独立随机 Worker Token：只允许心跳、领取更新 / 域名任务和报告结果；不接受任意命令。它不使用面板会话，也不向普通管理员浏览器返回令牌。
 
 未来独立前端可沿用上述用户 / 管理员 API；对外第三方长期服务账号、Telegram、支付渠道插件属于下一阶段，不把 Cookie 或管理员密码当作公开 API 密钥。
+
+
+0.2.0 增补：`GET/PUT /me/profile`、`PUT /me/password`、`POST /auth/verify-email`；注册/重置/改密使用 `password_confirm`。`GET /payment-methods`、`GET/POST /orders/{id}/payment`、`GET /orders/{id}/payment-code`、`GET/POST /orders/{id}/receipt`。
+
+主管理员专属 `GET/PUT /admin/payment-methods`、`GET /admin/payment-methods/{id}/image`、`GET/POST/PUT /admin/administrators`、`POST /admin/demo-plans`；`GET /admin/manual-payments` 和 `GET/PUT /admin/manual-payments/{id}` 需要 payments 权限。审核批准须提交 version、decision=approve、verified_reference、received_amount（分）、received_at（ISO 时间）和 confirmed=true；驳回须填写 note。返回 409 时须刷新数据核对，不应盲目重试。带图像请求采用 image_data 的 PNG/JPEG data URI，服务端限制解码后 1 MiB、尺寸与像素数。
+
+副管理员的功能权限每次请求由数据库实时读取；系统设置、收款方式、版本和团队维护只允许 is_owner=true。具体接口见在线 `/portal/v1/openapi`。

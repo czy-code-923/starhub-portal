@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory(prefix='starhub-portal-ci-') as tmp:
             req=urllib.request.Request(args.origin+'/portal/v1/'+path,data=None if body is None else json.dumps(body).encode(),headers={'Content-Type':'application/json','Origin':args.origin,'X-CSRF-Token':csrf})
             with opener.open(req,timeout=10) as res:return json.load(res)
         login=call('auth/login',credentials)
-        assert login['user']['role']=='admin'
+        assert login['user']['role']=='admin' and login['user']['is_owner'] is True
         assert call('me')['csrf']==login['csrf']
         settings=call('admin/settings')
         assert not settings['secrets']['control_configured']

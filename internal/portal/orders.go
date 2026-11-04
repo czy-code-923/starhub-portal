@@ -72,7 +72,7 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request) error {
 				prices = append(prices, pr)
 			}
 		}
-		plans = append(plans, map[string]any{"id": p.ID, "category_id": p.CategoryID, "name": p.Name, "description": p.Description, "recommended": p.Recommended && !a.now().Before(p.RecommendStarts) && a.now().Before(p.RecommendEnds), "quota_bytes": p.Quota, "prices": prices, "protocols": p.Protocols, "max_devices": p.MaxDevices, "billing_mode": p.Billing, "multiplier_milli": p.Multiplier, "allow_new": p.AllowNew, "allow_renew": p.AllowRenew})
+		plans = append(plans, map[string]any{"id": p.ID, "category_id": p.CategoryID, "name": p.Name, "description": p.Description, "recommended": p.Recommended && !a.now().Before(p.RecommendStarts) && a.now().Before(p.RecommendEnds), "quota_bytes": p.Quota, "prices": prices, "protocols": p.Protocols, "max_devices": p.MaxDevices, "billing_mode": p.Billing, "multiplier_milli": p.Multiplier, "allow_new": p.AllowNew, "allow_renew": p.AllowRenew, "simulation": p.Simulation})
 	}
 	if e = rows.Err(); e != nil {
 		return e
@@ -91,6 +91,9 @@ func (a *App) calculate(r *http.Request, tx pgx.Tx, b Buy) (Quote, error) {
 		return q, e
 	}
 	p := q.Plan
+	if p.Simulation {
+		return q, Problem{409, "模拟套餐仅供展示，需管理员绑定可计费用户组并转换为正式套餐后购买"}
+	}
 	found := false
 	for _, price := range p.Prices {
 		if price.ID == b.PriceID && price.Enabled {
@@ -259,7 +262,7 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 func (a *App) orders(w http.ResponseWriter, r *http.Request) error {
-	data, e := jsonRows(r.Context(), a.DB, `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,plan_id,price_id,snapshot->'plan'->>'name' plan_name,base_amount,discount_amount,payable,state,fulfillment,expires_at,paid_at,created_at FROM orders WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 100)x`, current(r).ID)
+	data, e := jsonRows(r.Context(), a.DB, `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,plan_id,price_id,(SELECT state FROM manual_payments m WHERE m.order_id=o.id) manual_state,snapshot->'plan'->>'name' plan_name,base_amount,discount_amount,payable,state,fulfillment,expires_at,paid_at,created_at FROM orders o WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 100)x`, current(r).ID)
 	if e != nil {
 		return e
 	}
@@ -290,6 +293,19 @@ func (a *App) cancelOrder(w http.ResponseWriter, r *http.Request) error {
 	}
 	if state != "pending" {
 		return bad("只有待支付订单可以取消")
+	}
+	var manualState string
+	e = tx.QueryRow(r.Context(), "SELECT state FROM manual_payments WHERE order_id=$1", r.PathValue("id")).Scan(&manualState)
+	if e != nil && e != pgx.ErrNoRows {
+		return e
+	}
+	if manualState == "submitted" {
+		return Problem{409, "已提交付款凭证，等待核款期间不能自行取消；如有疑问请创建工单"}
+	}
+	if manualState == "awaiting" || manualState == "rejected" {
+		if _, e = tx.Exec(r.Context(), "UPDATE manual_payments SET state='cancelled',version=version+1 WHERE order_id=$1", r.PathValue("id")); e != nil {
+			return e
+		}
 	}
 	if payment {
 		_, e = tx.Exec(r.Context(), "UPDATE orders SET expires_at=LEAST(expires_at,$2) WHERE id=$1", r.PathValue("id"), a.now())
