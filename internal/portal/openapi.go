@@ -1,6 +1,9 @@
 package portal
 
-import "net/http"
+import (
+	"net/http"
+	"strings"
+)
 
 func (a *App) openapi(w http.ResponseWriter, r *http.Request) error {
 	paths := map[string]any{}
@@ -13,9 +16,40 @@ func (a *App) openapi(w http.ResponseWriter, r *http.Request) error {
 		}
 		entry[item.method] = map[string]any{"summary": item.summary, "x-role": item.role, "responses": map[string]any{"200": map[string]string{"description": "Success"}, "400": map[string]string{"description": "Invalid typed request"}, "401": map[string]string{"description": "Authentication required"}, "403": map[string]string{"description": "Role, CSRF or ownership denied"}, "409": map[string]string{"description": "Version, coupon or order conflict"}}}
 	}
-	for _, resource := range []string{"settings", "categories", "plans", "coupons", "invitations", "customers", "orders", "jobs", "announcements", "tickets", "audit", "control-groups", "version"} {
-		paths["/portal/v1/admin/"+resource] = map[string]any{"get": map[string]any{"summary": "Administrator query: " + resource, "x-role": "admin", "responses": map[string]any{"200": map[string]string{"description": "Safe fields only; secrets are masked"}}}, "post": map[string]any{"summary": "Administrator create/action: " + resource, "x-role": "admin", "description": "Supported resources only; requires X-CSRF-Token. Use PUT for settings."}, "put": map[string]any{"summary": "Administrator optimistic update: " + resource, "x-role": "admin"}}
+	for path, methods := range map[string][]string{"settings": {"get", "put"}, "categories": {"get", "post", "put"}, "plans": {"get", "post", "put"}, "coupons": {"get", "post", "put"}, "invitations": {"get", "post", "put"}, "customers": {"get", "put"}, "orders": {"get"}, "jobs": {"get", "post"}, "announcements": {"get", "post", "put"}, "tickets": {"get"}, "audit": {"get"}, "control-groups": {"get"}, "version": {"get", "post"}} {
+		entry := map[string]any{}
+		for _, method := range methods {
+			entry[method] = map[string]any{"summary": "Administrator " + method + ": " + path, "x-role": "admin", "responses": map[string]any{"200": map[string]string{"description": "Success; secrets masked"}, "403": map[string]string{"description": "Admin role and CSRF required"}, "409": map[string]string{"description": "Optimistic version or state conflict"}}}
+		}
+		paths["/portal/v1/admin/"+path] = entry
 	}
+	paths["/portal/v1/health"] = map[string]any{"get": map[string]any{"summary": "Database health and installed version", "x-role": "public", "responses": map[string]any{"200": map[string]string{"description": "Healthy"}}}}
+	for _, v := range paths {
+		entry := v.(map[string]any)
+		for _, vv := range entry {
+			operation := vv.(map[string]any)
+			if operation["x-role"] == "public" || operation["x-role"] == "signed-channel" {
+				operation["security"] = []any{}
+			}
+		}
+	}
+	for path, v := range paths {
+		entry := v.(map[string]any)
+		for _, vv := range entry {
+			operation := vv.(map[string]any)
+			parameters := []any{}
+			if strings.Contains(path, "{id}") {
+				parameters = append(parameters, map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]string{"type": "string"}})
+			}
+			if strings.Contains(path, "{view}") {
+				parameters = append(parameters, map[string]any{"name": "view", "in": "path", "required": true, "schema": map[string]any{"type": "string", "enum": []string{"share", "qr", "content", "nodes", "check"}}})
+			}
+			if len(parameters) > 0 {
+				operation["parameters"] = parameters
+			}
+		}
+	}
+
 	send(w, 200, map[string]any{"openapi": "3.0.3", "info": map[string]string{"title": "Starhub Portal API", "version": Version}, "paths": paths, "components": map[string]any{"securitySchemes": map[string]any{"Session": map[string]string{"type": "apiKey", "in": "cookie", "name": "sp_session"}}}, "security": []map[string]any{{"Session": []string{}}}})
 	return nil
 }

@@ -55,6 +55,9 @@ func (a *App) controlRequest(ctx context.Context, method, path string, body any)
 			message = "请求未完成"
 		}
 		if res.StatusCode == 404 {
+			if strings.HasPrefix(path, "commerce/accounts/") {
+				return nil, Problem{404, "商业账户尚未创建"}
+			}
 			message = "星枢尚未支持商业接口，请先更新控制面"
 		}
 		return nil, Problem{503, fmt.Sprintf("星枢返回 %d：%s", res.StatusCode, message)}

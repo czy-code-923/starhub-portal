@@ -298,6 +298,7 @@ def install(args):
         # Remove inherited read access to the installation and all stored secrets.
         run(['icacls', str(root), '/inheritance:r', '/grant:r', '*S-1-5-32-544:(OI)(CI)F', '*S-1-5-18:(OI)(CI)F', '/T'])
     helper_install(root)
+    shutil.copy2(package / 'scripts/link-control.py', root / 'scripts/link-control.py')
     print('Starhub Portal installed: ' + origin)
     print('Credentials are stored only in ' + str(root / 'credentials.json') + ' (administrator access required).')
     print('Check address: python3 ' + str(root / 'scripts/manage.py') + ' status')
@@ -373,6 +374,7 @@ def update(root, version):
         marker['version'] = version
         write_private(root / 'installation.json', marker)
         shutil.copy2(package / 'scripts/manage.py', root / 'scripts/manage.py')
+        shutil.copy2(package / 'scripts/link-control.py', root / 'scripts/link-control.py')
     except Exception:
         rollback(root, state)
         (root / 'recovery.json').unlink(missing_ok=True)
@@ -438,13 +440,16 @@ networks:
         env['TRUSTED_PROXIES'] += ',' + ','.join(x['Subnet'] for x in network['IPAM']['Config'] if ':' not in x.get('Subnet', ''))
         run(['docker', 'compose', '-f', owned, 'up', '-d'], cwd=directory)
     elif owned.exists():
+        env['TRUSTED_PROXIES'] += ',' + ','.join(x['Subnet'] for x in network['IPAM']['Config'] if ':' not in x.get('Subnet', ''))
         write_private(directory / 'Caddyfile', config)
         run(['docker', 'compose', '-f', owned, 'exec', '-T', 'caddy', 'caddy', 'reload', '--config', '/etc/caddy/Caddyfile'], cwd=directory)
     env_write(root / 'portal.env', env)
     compose(root, 'up', '-d', 'app')
     expected = health(root)['installation_id']
     try:
-        result = json.loads(download(scheme + '://' + domain + '/portal/v1/health', 16 << 10)) if scheme == 'https' else None
+        req=urllib.request.Request(scheme+'://'+domain+'/portal/v1/health',headers={'User-Agent':'Starhub-Portal-Gateway-Check'})
+        with urllib.request.urlopen(req, timeout=20) as response:
+            result=json.loads(response.read(16 << 10))
         if result and result.get('installation_id') == expected:
             return 'Domain verified; IP entry remains available'
     except (OSError, ValueError):

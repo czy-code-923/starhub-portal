@@ -401,4 +401,56 @@ func TestSavedDomainIsAcceptedAndWorkerIsPrivate(t *testing.T) {
 	expect(t, w, 200)
 }
 
+func TestDisableDuringGrantAndLostMappingAreRevoked(t *testing.T) {
+	f := setup(t)
+	plan := f.plan()
+	created := f.order(plan, ID(), &f.customer, "")
+	expect(t, created, 201)
+	order := object(t, created)["id"].(string)
+	ctx := context.Background()
+	if _, e := f.a.DB.Exec(ctx, "UPDATE orders SET state='paid' WHERE id=$1", order); e != nil {
+		t.Fatal(e)
+	}
+	var revoked atomic.Int32
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/validate"):
+			send(w, 200, map[string]bool{"ready": true})
+		case strings.HasSuffix(r.URL.Path, "/entitlements"):
+			if _, e := f.a.DB.Exec(ctx, "UPDATE customers SET status='disabled' WHERE id=$1", f.customer.ID); e != nil {
+				t.Error(e)
+			}
+			send(w, 200, map[string]string{"user_id": strings.Repeat("b", 32), "subscription_id": strings.Repeat("c", 32), "operation_id": order})
+		case strings.HasSuffix(r.URL.Path, "/state"):
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			if body["enabled"] != false {
+				t.Error("disabled user was enabled")
+			}
+			revoked.Add(1)
+			send(w, 200, map[string]bool{"saved": true})
+		default:
+			t.Error("unexpected readiness check after disable")
+			send(w, 500, map[string]string{"error": "unexpected"})
+		}
+	}))
+	defer core.Close()
+	f.a.TestControlURL = core.URL
+	if e := f.a.fulfill(ctx, order); e == nil {
+		t.Fatal("disabled customer was marked active")
+	}
+	if revoked.Load() != 1 {
+		t.Fatal("concurrent disable was not synchronized")
+	}
+	if _, e := f.a.DB.Exec(ctx, "DELETE FROM service_accounts WHERE customer_id=$1", f.customer.ID); e != nil {
+		t.Fatal(e)
+	}
+	if e := f.a.syncAccess(ctx, f.customer.ID); e != nil {
+		t.Fatal(e)
+	}
+	if revoked.Load() != 2 {
+		t.Fatal("lost account mapping bypassed remote revocation")
+	}
+}
+
 var _ = io.EOF

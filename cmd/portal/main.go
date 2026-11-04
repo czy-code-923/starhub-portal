@@ -43,6 +43,16 @@ func main() {
 	app.WorkerToken = os.Getenv("WORKER_TOKEN")
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "control-configure":
+			if len(os.Args) != 3 {
+				log.Fatal("Usage: portal control-configure HTTPS_ORIGIN; restricted key on stdin")
+			}
+			key, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+			if e = app.ConfigureControl(ctx, os.Args[2], strings.TrimSpace(key)); e != nil {
+				log.Fatal(e)
+			}
+			fmt.Println("Restricted control-plane connection configured and verified.")
+			return
 		case "admin-create", "admin-reset":
 			if len(os.Args) != 3 {
 				log.Fatal("Usage: portal admin-create EMAIL; provide password on stdin")

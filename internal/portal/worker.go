@@ -115,6 +115,9 @@ func (a *App) fulfill(ctx context.Context, order string) error {
 		return e
 	}
 	if status != "active" {
+		if err := a.syncAccess(ctx, user); err != nil {
+			return err
+		}
 		return Problem{409, "账户未激活或已停用，请管理员处理已付款订单"}
 	}
 	if e = a.checkGroups(ctx, snapshot.Plan.Groups, snapshot.Plan.Protocols); e != nil {
@@ -131,6 +134,20 @@ func (a *App) fulfill(ctx context.Context, order string) error {
 	}
 	if len(result.UserID) != 32 || len(result.SubscriptionID) != 32 {
 		return errors.New("invalid entitlement response")
+	}
+	// Persist the mapping before waiting for Agent convergence. A concurrent
+	// disable job can then revoke the actual identity, even if this job retries.
+	if _, e = conn.Exec(ctx, `INSERT INTO service_accounts(customer_id,control_user_id,subscription_id,plan_id,last_order_id) VALUES($1,$2,$3,$4,$5) ON CONFLICT(customer_id) DO UPDATE SET control_user_id=excluded.control_user_id,subscription_id=excluded.subscription_id,plan_id=excluded.plan_id,last_order_id=excluded.last_order_id,updated_at=now()`, user, result.UserID, result.SubscriptionID, snapshot.Plan.ID, order); e != nil {
+		return e
+	}
+	if e = conn.QueryRow(ctx, "SELECT status FROM customers WHERE id=$1", user).Scan(&status); e != nil {
+		return e
+	}
+	if status != "active" {
+		if e = a.syncAccess(ctx, user); e != nil {
+			return e
+		}
+		return Problem{409, "账户已停用，已请求撤销代理身份"}
 	}
 	var ready struct {
 		Ready  bool   `json:"ready"`
@@ -163,14 +180,14 @@ func (a *App) syncAccess(ctx context.Context, user string) error {
 	if e := a.DB.QueryRow(ctx, "SELECT status FROM customers WHERE id=$1 AND role='customer'", user).Scan(&status); e != nil {
 		return e
 	}
-	var exists bool
-	if e := a.DB.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM service_accounts WHERE customer_id=$1)", user).Scan(&exists); e != nil {
-		return e
-	}
-	if !exists {
+	// External ID remains authoritative if a grant succeeded remotely but its
+	// response was lost before the local account mapping could be persisted.
+	err := a.control(ctx, "PUT", "commerce/accounts/"+user+"/state", map[string]any{"external_id": "portal:" + user, "enabled": status == "active"}, nil)
+	var p Problem
+	if errors.As(err, &p) && p.Status == 404 {
 		return nil
 	}
-	return a.control(ctx, "PUT", "commerce/accounts/"+user+"/state", map[string]any{"external_id": "portal:" + user, "enabled": status == "active"}, nil)
+	return err
 }
 func (a *App) sendJobMail(ctx context.Context, payload []byte) error {
 	var p map[string]string
