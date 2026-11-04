@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"github.com/jackc/pgx/v5"
 	"image"
 	_ "image/jpeg"
@@ -57,7 +58,7 @@ func (a *App) paymentMethods(w http.ResponseWriter, r *http.Request) error {
 	if e != nil {
 		return e
 	}
-	data, e := jsonRows(r.Context(), a.DB, `SELECT COALESCE(jsonb_agg(x ORDER BY x.id),'[]') FROM(SELECT id,provider,name,'manual' type,instructions FROM manual_payment_methods WHERE enabled AND qr_image IS NOT NULL)x`)
+	data, e := jsonRows(r.Context(), a.DB, `SELECT COALESCE(jsonb_agg(x ORDER BY x.id),'[]') FROM(SELECT id,provider,name,CASE WHEN id='alipay_redpacket' THEN 'redpacket' ELSE 'manual' END type,instructions FROM manual_payment_methods WHERE enabled AND (qr_image IS NOT NULL OR id='alipay_redpacket'))x`)
 	if e != nil {
 		return e
 	}
@@ -98,7 +99,7 @@ func (a *App) configurePaymentMethods(w http.ResponseWriter, r *http.Request) er
 	if e := decodeMedia(w, r, &b); e != nil {
 		return e
 	}
-	if !includes([]string{"alipay_static", "wechat_static"}, b.ID) || strings.TrimSpace(b.Name) == "" || !cleanText(b.Name, 60) || !cleanText(b.Instructions, 2000) || b.Clear && b.Image != "" {
+	if !includes([]string{"alipay_static", "wechat_static", "alipay_redpacket"}, b.ID) || strings.TrimSpace(b.Name) == "" || !cleanText(b.Name, 60) || !cleanText(b.Instructions, 2000) || b.Clear && b.Image != "" {
 		return bad("收款方式参数无效")
 	}
 	img, mime, e := parseImage(b.Image)
@@ -129,7 +130,10 @@ func (a *App) configurePaymentMethods(w http.ResponseWriter, r *http.Request) er
 		img = nil
 		mime = ""
 	}
-	if b.Enabled && len(img) == 0 {
+	if b.ID == "alipay_redpacket" && b.Image != "" {
+		return bad("口令红包方式不使用收款码图片")
+	}
+	if b.Enabled && len(img) == 0 && b.ID != "alipay_redpacket" {
 		return bad("启用前请上传真实收款码")
 	}
 	if _, e = tx.Exec(ctx, "UPDATE manual_payment_methods SET name=$2,instructions=$3,enabled=$4,qr_image=$5,qr_mime=$6,version=version+1,updated_at=now() WHERE id=$1", b.ID, b.Name, b.Instructions, b.Enabled, img, mime); e != nil {
@@ -197,7 +201,7 @@ func (a *App) beginManualPayment(w http.ResponseWriter, r *http.Request, method 
 			return Problem{409, "订单已绑定收款方式，请使用原方式或重新下单"}
 		}
 	} else if e == pgx.ErrNoRows {
-		tag, err := tx.Exec(ctx, `INSERT INTO manual_payments(id,order_id,method_id,provider,method_name,instructions,qr_image,qr_mime,review_deadline) SELECT $1,$2,id,provider,name,instructions,qr_image,qr_mime,$4 FROM manual_payment_methods WHERE id=$3 AND enabled AND qr_image IS NOT NULL`, ID(), r.PathValue("id"), method, expiry.Add(48*time.Hour))
+		tag, err := tx.Exec(ctx, `INSERT INTO manual_payments(id,order_id,method_id,provider,method_name,instructions,qr_image,qr_mime,review_deadline) SELECT $1,$2,id,provider,name,instructions,qr_image,qr_mime,$4 FROM manual_payment_methods WHERE id=$3 AND enabled AND (qr_image IS NOT NULL OR id='alipay_redpacket')`, ID(), r.PathValue("id"), method, expiry.Add(48*time.Hour))
 		if err != nil {
 			return err
 		}
@@ -221,7 +225,7 @@ func (a *App) manualStatus(w http.ResponseWriter, r *http.Request) error {
 	if !exists {
 		return pgx.ErrNoRows
 	}
-	data, e := jsonRows(ctx, a.DB, `SELECT COALESCE((SELECT to_jsonb(x) FROM(SELECT m.id,m.method_id,m.method_name,m.instructions,m.state,m.reference,m.payer_note,(m.proof_image IS NOT NULL) proof_available,m.version,m.review_note,m.submitted_at,m.review_deadline,o.payable,o.expires_at,o.state order_state FROM manual_payments m JOIN orders o ON o.id=m.order_id WHERE m.order_id=$1 AND o.customer_id=$2)x),'null')`, r.PathValue("id"), current(r).ID)
+	data, e := jsonRows(ctx, a.DB, `SELECT COALESCE((SELECT to_jsonb(x) FROM(SELECT m.id,m.method_id,m.method_name,m.instructions,(m.redpacket_sealed IS NOT NULL) redpacket_submitted,o.id payment_reference,m.state,m.reference,m.payer_note,(m.proof_image IS NOT NULL) proof_available,m.version,m.review_note,m.submitted_at,m.review_deadline,o.payable,o.expires_at,o.state order_state FROM manual_payments m JOIN orders o ON o.id=m.order_id WHERE m.order_id=$1 AND o.customer_id=$2)x),'null')`, r.PathValue("id"), current(r).ID)
 	if e != nil {
 		return e
 	}
@@ -248,6 +252,7 @@ func (a *App) submitReceipt(w http.ResponseWriter, r *http.Request) error {
 	imageSlots <- struct{}{}
 	defer func() { <-imageSlots }()
 	var b struct {
+		Redpacket string `json:"redpacket_password"`
 		Reference string `json:"reference"`
 		Note      string `json:"note"`
 		Image     string `json:"image_data"`
@@ -257,7 +262,7 @@ func (a *App) submitReceipt(w http.ResponseWriter, r *http.Request) error {
 		return e
 	}
 	b.Reference = strings.TrimSpace(b.Reference)
-	if !cleanText(b.Reference, 100) || !cleanText(b.Note, 1000) || b.Reference == "" && b.Image == "" {
+	if !cleanText(b.Reference, 100) || !cleanText(b.Note, 1000) {
 		return bad("请填写付款流水或上传付款截图")
 	}
 	img, mime, e := parseImage(b.Image)
@@ -273,12 +278,12 @@ func (a *App) submitReceipt(w http.ResponseWriter, r *http.Request) error {
 	if e = lock(ctx, tx); e != nil {
 		return e
 	}
-	var id, state, orderState string
+	var id, state, orderState, method string
 	var version int
 	var expiry time.Time
-	var oldImage []byte
+	var oldImage, sealed []byte
 	var oldMime string
-	if e = tx.QueryRow(ctx, `SELECT m.id,m.state,m.version,o.state,o.expires_at,m.proof_image,m.proof_mime FROM manual_payments m JOIN orders o ON o.id=m.order_id WHERE o.id=$1 AND o.customer_id=$2 FOR UPDATE OF m,o`, r.PathValue("id"), current(r).ID).Scan(&id, &state, &version, &orderState, &expiry, &oldImage, &oldMime); e != nil {
+	if e = tx.QueryRow(ctx, `SELECT m.id,m.state,m.version,o.state,o.expires_at,m.proof_image,m.proof_mime,m.method_id,m.redpacket_sealed FROM manual_payments m JOIN orders o ON o.id=m.order_id WHERE o.id=$1 AND o.customer_id=$2 FOR UPDATE OF m,o`, r.PathValue("id"), current(r).ID).Scan(&id, &state, &version, &orderState, &expiry, &oldImage, &oldMime, &method, &sealed); e != nil {
 		return e
 	}
 	if version != b.Version {
@@ -290,7 +295,25 @@ func (a *App) submitReceipt(w http.ResponseWriter, r *http.Request) error {
 	if b.Image == "" {
 		img, mime = oldImage, oldMime
 	}
-	if _, e = tx.Exec(ctx, `UPDATE manual_payments SET state='submitted',reference=$2,payer_note=$3,proof_image=$4,proof_mime=$5,submitted_at=now(),version=version+1 WHERE id=$1`, id, b.Reference, b.Note, img, mime); e != nil {
+	if method == "alipay_redpacket" {
+		if b.Redpacket != "" {
+			sealed, e = a.saveRedpacket(ctx, tx, r.PathValue("id"), b.Redpacket)
+			if e != nil {
+				return e
+			}
+		}
+		if len(sealed) == 0 {
+			return bad("请提交本订单的红包口令")
+		}
+	} else if b.Redpacket != "" {
+		return bad("当前订单未选择口令红包方式")
+	} else if b.Reference == "" && b.Image == "" {
+		return bad("请填写付款流水或上传付款截图")
+	}
+	if _, e = tx.Exec(ctx, `UPDATE manual_payments SET state='submitted',reference=$2,payer_note=$3,proof_image=$4,proof_mime=$5,redpacket_sealed=$6,submitted_at=now(),version=version+1 WHERE id=$1`, id, b.Reference, b.Note, img, mime, sealed); e != nil {
+		return e
+	}
+	if e = queueTelegram(ctx, tx, "receipt:"+id+":"+fmt.Sprint(version+1), r.PathValue("id"), "payment.submitted"); e != nil {
 		return e
 	}
 	if e = audit(ctx, tx, current(r).ID, "manual-payment.submit", id); e != nil {
@@ -309,7 +332,7 @@ func (a *App) reviewPayments(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	id := r.PathValue("id")
 	if r.Method == "GET" {
-		data, e := jsonRows(ctx, a.DB, `SELECT COALESCE(jsonb_agg(x ORDER BY x.created_at DESC),'[]') FROM(SELECT m.id,m.order_id,m.provider,m.method_name,m.state,m.reference,m.payer_note,(m.proof_image IS NOT NULL) proof_available,m.verified_reference,m.received_amount,m.received_at,m.review_note,m.reviewed_at,m.review_deadline,m.submitted_at,m.created_at,m.version,o.payable,o.state order_state,o.customer_id,c.email,c.name FROM manual_payments m JOIN orders o ON o.id=m.order_id JOIN customers c ON c.id=o.customer_id WHERE ($1='' OR m.id=$1) ORDER BY m.created_at DESC LIMIT 300)x`, id)
+		data, e := jsonRows(ctx, a.DB, `SELECT COALESCE(jsonb_agg(x ORDER BY x.created_at DESC),'[]') FROM(SELECT m.id,m.order_id,m.method_id,m.provider,m.method_name,(m.redpacket_sealed IS NOT NULL) redpacket_submitted,m.state,m.reference,m.payer_note,(m.proof_image IS NOT NULL) proof_available,m.verified_reference,m.received_amount,m.received_at,m.review_note,m.reviewed_at,m.review_deadline,m.submitted_at,m.created_at,m.version,o.payable,o.state order_state,o.customer_id,c.email,c.name FROM manual_payments m JOIN orders o ON o.id=m.order_id JOIN customers c ON c.id=o.customer_id WHERE ($1='' OR m.id=$1) ORDER BY m.created_at DESC LIMIT 300)x`, id)
 		if e != nil {
 			return e
 		}
@@ -357,11 +380,11 @@ func (a *App) reviewPayments(w http.ResponseWriter, r *http.Request) error {
 	if e = lock(ctx, tx); e != nil {
 		return e
 	}
-	var order, user, state, orderState, verified, provider string
+	var order, user, state, orderState, verified, provider, method string
 	var version int
 	var amount int64
 	var expiry, created, deadline time.Time
-	if e = tx.QueryRow(ctx, `SELECT m.order_id,o.customer_id,m.state,m.version,o.payable,o.state,o.expires_at,o.created_at,m.review_deadline,COALESCE(m.verified_reference,''),m.provider FROM manual_payments m JOIN orders o ON o.id=m.order_id WHERE m.id=$1 FOR UPDATE OF m,o`, id).Scan(&order, &user, &state, &version, &amount, &orderState, &expiry, &created, &deadline, &verified, &provider); e != nil {
+	if e = tx.QueryRow(ctx, `SELECT m.order_id,o.customer_id,m.state,m.version,o.payable,o.state,o.expires_at,o.created_at,m.review_deadline,COALESCE(m.verified_reference,''),m.provider,m.method_id FROM manual_payments m JOIN orders o ON o.id=m.order_id WHERE m.id=$1 FOR UPDATE OF m,o`, id).Scan(&order, &user, &state, &version, &amount, &orderState, &expiry, &created, &deadline, &verified, &provider, &method); e != nil {
 		return e
 	}
 	if user == current(r).ID {
@@ -389,8 +412,12 @@ func (a *App) reviewPayments(w http.ResponseWriter, r *http.Request) error {
 		if b.Amount != amount {
 			return bad("实收金额必须与订单优惠后应付金额一致")
 		}
-		if !b.At.Before(expiry) || b.At.Before(created.Add(-time.Minute)) {
-			return bad("到账时间不在本订单付款窗口内，不能直接开通，请人工处理退款或新订单")
+		paymentEnd := expiry
+		if method == "alipay_redpacket" {
+			paymentEnd = deadline
+		}
+		if !b.At.Before(paymentEnd) || b.At.Before(created.Add(-time.Minute)) {
+			return bad("到账时间不在本订单付款/核验窗口内，不能直接开通，请人工处理退款或新订单")
 		}
 		_, e = tx.Exec(ctx, `UPDATE manual_payments SET state='approved',verified_reference=$2,received_amount=$3,received_at=$4,review_note=$5,reviewed_by=$6,reviewed_at=now(),version=version+1 WHERE id=$1`, id, b.Reference, b.Amount, b.At, b.Note, current(r).ID)
 		if e != nil {
@@ -402,6 +429,9 @@ func (a *App) reviewPayments(w http.ResponseWriter, r *http.Request) error {
 		_, e = tx.Exec(ctx, "INSERT INTO jobs(id,kind,subject) VALUES($1,'fulfill',$2) ON CONFLICT(kind,subject) DO NOTHING", ID(), order)
 	}
 	if e != nil {
+		return e
+	}
+	if e = queueTelegram(ctx, tx, "review:"+id+":"+fmt.Sprint(version+1), order, "payment."+b.Decision); e != nil {
 		return e
 	}
 	if e = audit(ctx, tx, current(r).ID, "manual-payment."+b.Decision, id); e != nil {

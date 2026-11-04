@@ -25,6 +25,6 @@ for arch in ('amd64','arm64'):
 with zipfile.ZipFile(OUT/('starhub-portal-source-'+VERSION+'.zip'),'w',zipfile.ZIP_DEFLATED) as z:
     for path in sorted(ROOT.rglob('*')):
         relative=path.relative_to(ROOT)
-        if path.is_file() and not any(x in relative.parts for x in ['.git','node_modules','dist','data','__pycache__']) and not path.name.endswith(('.env','.log','.pyc','.tsbuildinfo')) and path.name not in ['credentials.json','installation.json']:
+        if path.is_file() and not any(x in relative.parts for x in ['.git','.preview','.cache','node_modules','dist','data','__pycache__']) and not path.name.endswith(('.env','.log','.pyc','.tsbuildinfo','.exe')) and path.name not in ['credentials.json','installation.json']:
             z.write(path,relative.as_posix())
 (OUT/'SHA256SUMS.txt').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n' for p in sorted(OUT.glob('*.zip'))),encoding='utf-8')

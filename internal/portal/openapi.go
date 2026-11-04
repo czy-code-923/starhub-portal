@@ -16,7 +16,7 @@ func (a *App) openapi(w http.ResponseWriter, r *http.Request) error {
 		}
 		entry[item.method] = map[string]any{"summary": item.summary, "x-role": item.role, "responses": map[string]any{"200": map[string]string{"description": "Success"}, "400": map[string]string{"description": "Invalid typed request"}, "401": map[string]string{"description": "Authentication required"}, "403": map[string]string{"description": "Role, CSRF or ownership denied"}, "409": map[string]string{"description": "Version, coupon or order conflict"}}}
 	}
-	for path, methods := range map[string][]string{"settings": {"get", "put"}, "categories": {"get", "post", "put"}, "plans": {"get", "post", "put"}, "coupons": {"get", "post", "put"}, "invitations": {"get", "post", "put"}, "customers": {"get", "put"}, "orders": {"get"}, "jobs": {"get", "post"}, "announcements": {"get", "post", "put"}, "tickets": {"get"}, "audit": {"get"}, "control-groups": {"get"}, "version": {"get", "post"}, "payment-methods": {"get", "put"}, "payment-methods/{id}/image": {"get"}, "administrators": {"get", "post", "put"}, "demo-plans": {"post"}, "manual-payments": {"get"}, "manual-payments/{id}": {"get", "put"}} {
+	for path, methods := range map[string][]string{"settings": {"get", "put"}, "categories": {"get", "post", "put"}, "plans": {"get", "post", "put"}, "coupons": {"get", "post", "put"}, "invitations": {"get", "post", "put"}, "customers": {"get", "put"}, "orders": {"get"}, "jobs": {"get", "post"}, "announcements": {"get", "post", "put"}, "tickets": {"get"}, "audit": {"get"}, "control-groups": {"get"}, "version": {"get", "post"}, "payment-methods": {"get", "put"}, "payment-methods/{id}/image": {"get"}, "administrators": {"get", "post", "put"}, "demo-plans": {"post"}, "manual-payments": {"get"}, "manual-payments/{id}": {"get", "put"}, "manual-payments/{id}/redpacket": {"get"}, "telegram": {"get", "put"}, "telegram/check": {"post"}, "telegram/commands": {"post"}, "telegram/retry": {"post"}, "gateway/retry": {"post"}} {
 		entry := map[string]any{}
 		for _, method := range methods {
 			entry[method] = map[string]any{"summary": "Administrator " + method + ": " + path, "x-role": adminDocRole(path), "responses": map[string]any{"200": map[string]string{"description": "Success; sensitive secrets masked; authorized invitation/coupon codes remain viewable"}, "403": map[string]string{"description": "Admin role and CSRF required"}, "409": map[string]string{"description": "Optimistic version or state conflict"}}}
@@ -56,9 +56,9 @@ func (a *App) openapi(w http.ResponseWriter, r *http.Request) error {
 
 func adminDocRole(path string) string {
 	switch path {
-	case "settings", "version", "payment-methods", "payment-methods/{id}/image", "administrators", "demo-plans":
+	case "telegram", "telegram/check", "telegram/commands", "telegram/retry", "gateway/retry", "settings", "version", "payment-methods", "payment-methods/{id}/image", "administrators", "demo-plans":
 		return "owner"
-	case "manual-payments", "manual-payments/{id}":
+	case "manual-payments", "manual-payments/{id}", "manual-payments/{id}/redpacket":
 		return "admin:payments"
 	default:
 		return "admin:" + adminResourceScope(path)

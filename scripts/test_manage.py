@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
+from types import SimpleNamespace
 
 spec = importlib.util.spec_from_file_location('manage', Path(__file__).with_name('manage.py'))
 m = importlib.util.module_from_spec(spec)
@@ -13,6 +14,14 @@ spec.loader.exec_module(m)
 
 
 class InstallerSafety(unittest.TestCase):
+    def test_explicit_ip_port_and_separate_domain(self):
+        args=SimpleNamespace(ip='198.51.100.20',port=19088,origin='',bind='')
+        self.assertEqual(m.install_origins(args),('http://198.51.100.20:19088','http://198.51.100.20:19088','0.0.0.0'))
+        args.ip='[2001:db8::123]';args.origin='https://buy.example.test'
+        self.assertEqual(m.install_origins(args),('https://buy.example.test','http://[2001:db8::123]:19088','::'))
+        args.ip='host.example.test'
+        with self.assertRaises(ValueError):m.install_origins(args)
+        with self.assertRaises(ValueError):m.address_origin('192.0.2.1',80)
     def archive(self, extra=None):
         stream = io.BytesIO()
         with zipfile.ZipFile(stream, 'w') as z:

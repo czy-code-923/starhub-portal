@@ -38,7 +38,8 @@ jobs:
           go vet ./...
           go test -race -count=1 ./...
           python3 scripts/test_manage.py
-          python3 -m py_compile scripts/manage.py scripts/package.py
+          python3 scripts/test_domain_bridge.py
+          python3 -m py_compile scripts/manage.py scripts/package.py scripts/domain_bridge.py
           cd web
           npm ci --no-audit --no-fund
           npm test

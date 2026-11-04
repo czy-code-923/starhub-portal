@@ -252,6 +252,9 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) error {
 	if e != nil {
 		return e
 	}
+	if e = queueTelegram(r.Context(), tx, "order:"+id, id, "order.created"); e != nil {
+		return e
+	}
 	if e = audit(r.Context(), tx, current(r).ID, "order.create", id); e != nil {
 		return e
 	}

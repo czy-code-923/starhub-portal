@@ -15,6 +15,7 @@ import (
 )
 
 func (a *App) Run(ctx context.Context) {
+	go a.RunTelegram(ctx)
 	timer := time.NewTicker(5 * time.Second)
 	defer timer.Stop()
 	for {
@@ -171,6 +172,9 @@ func (a *App) fulfill(ctx context.Context, order string) error {
 		return e
 	}
 	if _, e = tx.Exec(ctx, "UPDATE orders SET fulfillment='active' WHERE id=$1 AND state='paid'", order); e != nil {
+		return e
+	}
+	if e = queueTelegram(ctx, tx, "active:"+order, order, "service.active"); e != nil {
 		return e
 	}
 	return tx.Commit(ctx)

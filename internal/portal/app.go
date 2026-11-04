@@ -27,22 +27,24 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const Version = "0.2.2"
+const Version = "0.3.0"
 const Repository = "czy-code-923/starhub-portal"
 
 //go:embed migrations/*.sql
 var migrations embed.FS
 
 type App struct {
-	WorkerToken    string
-	TrustedProxies []netip.Prefix
-	DB             *pgxpool.Pool
-	Key            []byte
-	Origin, WebDir string
-	Client         *http.Client
-	Mail           func(context.Context, string, string, string) error
-	Now            func() time.Time
-	TestControlURL string
+	IPOrigin        string
+	WorkerToken     string
+	TrustedProxies  []netip.Prefix
+	DB              *pgxpool.Pool
+	Key             []byte
+	Origin, WebDir  string
+	Client          *http.Client
+	Mail            func(context.Context, string, string, string) error
+	Now             func() time.Time
+	TestControlURL  string
+	TestTelegramURL string
 }
 type Problem struct {
 	Status  int
@@ -333,6 +335,12 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("GET /portal/v1/admin/payment-methods/{id}/image", a.auth(a.methodImage, true))
 	m.HandleFunc("GET /portal/v1/admin/manual-payments", a.auth(a.reviewPayments, true))
 	m.HandleFunc("GET /portal/v1/admin/manual-payments/{id}", a.auth(a.reviewPayments, true))
+	m.HandleFunc("GET /portal/v1/admin/manual-payments/{id}/redpacket", a.auth(a.viewRedpacket, true))
+	m.HandleFunc("GET /portal/v1/admin/telegram", a.auth(a.telegramSettings, true))
+	m.HandleFunc("PUT /portal/v1/admin/telegram", a.auth(a.telegramSettings, true))
+	m.HandleFunc("POST /portal/v1/admin/telegram/check", a.auth(a.telegramCheck, true))
+	m.HandleFunc("POST /portal/v1/admin/telegram/retry", a.auth(a.telegramRetry, true))
+	m.HandleFunc("POST /portal/v1/admin/telegram/commands", a.auth(a.telegramCommands, true))
 	m.HandleFunc("PUT /portal/v1/admin/manual-payments/{id}", a.auth(a.reviewPayments, true))
 	m.HandleFunc("POST /portal/v1/admin/demo-plans", a.auth(a.demoPlans, true))
 
@@ -360,6 +368,7 @@ func (a *App) Handler() http.Handler {
 		}
 	}
 	m.HandleFunc("GET /portal/v1/openapi", a.auth(a.openapi, true))
+	m.HandleFunc("POST /portal/v1/admin/gateway/retry", a.auth(a.retryGateway, true))
 	m.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/portal/") {
 			http.NotFound(w, r)
@@ -407,7 +416,7 @@ func (a *App) Handler() http.Handler {
 }
 
 func (a *App) allowedOrigin(ctx context.Context, origin string) bool {
-	if origin == a.Origin {
+	if origin == a.Origin || a.IPOrigin != "" && origin == a.IPOrigin {
 		return true
 	}
 	s, _, e := a.settings(ctx)

@@ -163,7 +163,7 @@ func (a *App) pay(w http.ResponseWriter, r *http.Request) error {
 		return e
 	}
 	if choice.Method != "" && choice.Method != "alipay_official" {
-		if !includes([]string{"alipay_static", "wechat_static"}, choice.Method) {
+		if !includes([]string{"alipay_static", "wechat_static", "alipay_redpacket"}, choice.Method) {
 			return bad("未知收款方式")
 		}
 		return a.beginManualPayment(w, r, choice.Method)

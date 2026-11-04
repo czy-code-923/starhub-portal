@@ -1,0 +1,13 @@
+ALTER TABLE manual_payment_methods DROP CONSTRAINT manual_payment_methods_id_check;
+ALTER TABLE manual_payment_methods ADD CONSTRAINT manual_payment_methods_id_check CHECK(id IN ('alipay_static','wechat_static','alipay_redpacket'));
+INSERT INTO manual_payment_methods(id,provider,name,instructions) VALUES('alipay_redpacket','alipay','支付宝口令红包','请发送与订单实付金额相同的单个口令红包，并在此订单提交口令。管理员领取并核实实际到账后开通；提交口令不等于付款成功。');
+ALTER TABLE manual_payments ALTER COLUMN qr_image DROP NOT NULL;
+ALTER TABLE manual_payments ADD COLUMN redpacket_sealed bytea;
+CREATE TABLE redpacket_claims(code_hash text PRIMARY KEY,order_id text NOT NULL REFERENCES orders(id),created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE telegram_settings(id boolean PRIMARY KEY DEFAULT true CHECK(id),enabled boolean NOT NULL DEFAULT false,sealed bytea,version integer NOT NULL DEFAULT 1,cursor bigint NOT NULL DEFAULT 0,username text NOT NULL DEFAULT '',last_poll_at timestamptz,last_error text NOT NULL DEFAULT '',updated_at timestamptz NOT NULL DEFAULT now());
+INSERT INTO telegram_settings(id) VALUES(true);
+ALTER TABLE telegram_settings ADD COLUMN checked_version integer NOT NULL DEFAULT 0;
+CREATE TABLE telegram_command_limits(user_id bigint PRIMARY KEY,last_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE telegram_events(id text PRIMARY KEY,order_id text NOT NULL REFERENCES orders(id),kind text NOT NULL,state text NOT NULL DEFAULT 'queued' CHECK(state IN ('queued','sent','failed')),attempts integer NOT NULL DEFAULT 0,available_at timestamptz NOT NULL DEFAULT now(),created_at timestamptz NOT NULL DEFAULT now(),last_error text NOT NULL DEFAULT '');
+CREATE INDEX telegram_pending ON telegram_events(state,available_at);
+CREATE TABLE telegram_deliveries(event_id text NOT NULL REFERENCES telegram_events(id) ON DELETE CASCADE,user_id bigint NOT NULL,sent_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(event_id,user_id));

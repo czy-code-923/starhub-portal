@@ -1,4 +1,4 @@
-param([string]$Root="$env:ProgramData\StarhubPortal",[int]$Port=18088,[string]$Origin='',[string]$AdminEmail='admin@starhub.local')
+param([string]$Root="$env:ProgramData\StarhubPortal",[int]$Port=18088,[string]$Origin='',[string]$PublicIP='',[ValidateSet('','0.0.0.0','127.0.0.1','::','::1')][string]$Bind='',[string]$AdminEmail='admin@starhub.local',[switch]$AskPassword)
 $ErrorActionPreference='Stop'
 $python=Get-Command python -ErrorAction SilentlyContinue
 if (-not $python -or -not (& $python.Source -c 'import sys; print(sys.version_info >= (3,10))' 2>$null | Select-String 'True')) {
@@ -12,4 +12,4 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
   throw 'Docker Desktop has been installed. Complete its first-run setup, select Linux containers, then rerun.'
 }
 $f=Join-Path ([IO.Path]::GetTempPath()) ('starhub-portal-'+[guid]::NewGuid()+'.py')
-try { Invoke-WebRequest https://raw.githubusercontent.com/czy-code-923/starhub-portal/main/scripts/manage.py -OutFile $f; $a=@($f,'install','--root',$Root,'--port',"$Port",'--admin-email',$AdminEmail); if($Origin){$a+=@('--origin',$Origin)}; & $python.Source @a; if($LASTEXITCODE){throw 'Portal installation failed'} } finally { Remove-Item -LiteralPath $f -ErrorAction SilentlyContinue }
+try { Invoke-WebRequest https://raw.githubusercontent.com/czy-code-923/starhub-portal/main/scripts/manage.py -OutFile $f; $a=@($f,'install','--root',$Root,'--port',"$Port",'--admin-email',$AdminEmail); if($Origin){$a+=@('--origin',$Origin)}; if($PublicIP){$a+=@('--ip',$PublicIP)}; if($Bind){$a+=@('--bind',$Bind)}; if($AskPassword){$a+='--ask-password'}; & $python.Source @a; if($LASTEXITCODE){throw 'Portal installation failed'} } finally { Remove-Item -LiteralPath $f -ErrorAction SilentlyContinue }

@@ -41,6 +41,12 @@ func main() {
 	}
 	defer app.DB.Close()
 	app.WorkerToken = os.Getenv("WORKER_TOKEN")
+	app.IPOrigin = os.Getenv("IP_ORIGIN")
+	if app.IPOrigin != "" {
+		if _, err := portal.ValidEntryOrigin(app.IPOrigin); err != nil {
+			log.Fatal("Invalid IP_ORIGIN")
+		}
+	}
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "control-configure":

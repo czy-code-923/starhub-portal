@@ -2,6 +2,7 @@ package portal
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -181,3 +182,5 @@ func (a *App) verifyNewEmail(w http.ResponseWriter, r *http.Request) error {
 	send(w, 200, map[string]string{"message": "新邮箱已验证，请使用新邮箱重新登录"})
 	return nil
 }
+
+func ValidEntryOrigin(value string) (*url.URL, error) { return validOrigin(value) }

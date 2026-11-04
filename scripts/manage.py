@@ -9,6 +9,7 @@ import contextlib
 import getpass
 import hashlib
 import io
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -205,12 +206,30 @@ def check_docker(install=False):
 
 
 def detect_ip():
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+    candidates=[]
+    for family,target in ((socket.AF_INET,('1.1.1.1',80)),(socket.AF_INET6,('2606:4700:4700::1111',80))):
         try:
-            s.connect(('1.1.1.1', 80))
-            return s.getsockname()[0]
-        except OSError:
-            return '127.0.0.1'
+            with socket.socket(family,socket.SOCK_DGRAM) as sock:
+                sock.connect(target);value=sock.getsockname()[0]
+                if ipaddress.ip_address(value).is_global:return value
+                candidates.append(value)
+        except OSError:pass
+    return candidates[0] if candidates else '127.0.0.1'
+
+
+def address_origin(address,port):
+    address=str(ipaddress.ip_address(address.strip().strip('[]')))
+    if not 1024<=port<=65535:raise ValueError('Port must be 1024-65535')
+    host='['+address+']' if ':' in address else address
+    return 'http://'+host+':'+str(port)
+
+
+def install_origins(args):
+    address=getattr(args,'ip','') or detect_ip()
+    direct=address_origin(address,args.port)
+    preferred=origin_valid(args.origin) if args.origin else direct
+    bind=getattr(args,'bind','') or ('::' if ':' in address.strip('[]') else '0.0.0.0')
+    return preferred,direct,bind
 
 
 def origin_valid(origin):
@@ -272,9 +291,9 @@ def install(args):
     port = args.port
     if not 1024 <= port <= 65535:
         raise ValueError('Port must be between 1024 and 65535')
-    with socket.socket() as sock:
-        sock.bind(('0.0.0.0', port))
-    origin = origin_valid(args.origin or f'http://{detect_ip()}:{port}')
+    origin,ip_origin,bind_address=install_origins(args)
+    with socket.socket(socket.AF_INET6 if ':' in bind_address else socket.AF_INET) as sock:
+        sock.bind((bind_address,port))
     version, data = release(args.version)
     root.mkdir(parents=True, exist_ok=True)
     if os.name != 'nt':
@@ -287,10 +306,11 @@ def install(args):
     shutil.copy2(package / 'compose.yaml', root / 'compose.yaml')
     (root / 'scripts').mkdir()
     shutil.copy2(package / 'scripts/manage.py', root / 'scripts/manage.py')
-    settings = {'PORTAL_VERSION': version, 'DB_PASSWORD': secrets.token_hex(32), 'PORTAL_PORT': str(port), 'BIND_IP': args.bind}
+    if (package/'scripts/domain_bridge.py').exists():shutil.copy2(package/'scripts/domain_bridge.py',root/'scripts/domain_bridge.py')
+    settings = {'PORTAL_VERSION': version, 'DB_PASSWORD': secrets.token_hex(32), 'PORTAL_PORT': str(port), 'BIND_IP': '['+bind_address+']' if ':' in bind_address else bind_address}
     env_write(root / 'compose.env', settings)
-    env_write(root / 'portal.env', {'MASTER_KEY': secrets.token_hex(32), 'WORKER_TOKEN': secrets.token_hex(32), 'PUBLIC_ORIGIN': origin})
-    marker = {'marker': MARKER, 'root': str(root), 'version': version, 'origin': origin, 'port': port}
+    env_write(root / 'portal.env', {'MASTER_KEY': secrets.token_hex(32), 'WORKER_TOKEN': secrets.token_hex(32), 'PUBLIC_ORIGIN': origin,'IP_ORIGIN':ip_origin})
+    marker = {'marker': MARKER, 'root': str(root), 'version': version, 'origin': origin, 'ip_origin':ip_origin, 'port': port}
     write_private(root / 'installation.json', marker)
     compose(root, 'up', '-d', '--build', timeout=1200)
     health(root, version)
@@ -383,6 +403,7 @@ def update(root, version):
         write_private(root / 'installation.json', marker)
         shutil.copy2(package / 'scripts/manage.py', root / 'scripts/manage.py')
         shutil.copy2(package / 'scripts/link-control.py', root / 'scripts/link-control.py')
+        if (package/'scripts/domain_bridge.py').exists():shutil.copy2(package/'scripts/domain_bridge.py',root/'scripts/domain_bridge.py')
     except Exception:
         rollback(root, state)
         (root / 'recovery.json').unlink(missing_ok=True)
@@ -396,6 +417,10 @@ def gateway(root, payload):
     if not domain:
         owned = root / 'gateway/compose.yaml'
         if owned.exists(): run(['docker', 'compose', '-f', owned, 'down'], cwd=owned.parent)
+        if (root/'scripts/domain_bridge.py').exists():
+            import domain_bridge
+            domain_bridge.disable(root)
+        marker=read_json(root/'installation.json');marker['public_origin']=marker.get('ip_origin',marker['origin']);write_private(root/'installation.json',marker)
         return 'No domain requested; IP entry remains available'
     if not re.fullmatch(r'[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?', domain) or '.' not in domain or '..' in domain:
         raise ValueError('Invalid gateway domain')
@@ -419,6 +444,10 @@ location / {{
     }}
 }}
 '''
+    linked=False
+    if payload.get('https') and (root/'scripts/domain_bridge.py').exists():
+        import domain_bridge
+        linked=domain_bridge.configure(root,domain,port)
     free = True
     for number in (80, 443):
         try:
@@ -430,7 +459,7 @@ location / {{
     env = environment(root / 'portal.env')
     env['TRUSTED_PROXIES'] = ','.join(x['Gateway'] + '/32' for x in network['IPAM']['Config'] if ':' not in x.get('Gateway', ''))
     owned = directory / 'compose.yaml'
-    if free:
+    if free and not linked:
         write_private(directory / 'Caddyfile', config)
         write_private(owned, '''name: starhub-portal-gateway
 services:
@@ -447,24 +476,26 @@ networks:
 ''')
         env['TRUSTED_PROXIES'] += ',' + ','.join(x['Subnet'] for x in network['IPAM']['Config'] if ':' not in x.get('Subnet', ''))
         run(['docker', 'compose', '-f', owned, 'up', '-d'], cwd=directory)
-    elif owned.exists():
+    elif owned.exists() and not linked:
         env['TRUSTED_PROXIES'] += ',' + ','.join(x['Subnet'] for x in network['IPAM']['Config'] if ':' not in x.get('Subnet', ''))
         write_private(directory / 'Caddyfile', config)
         run(['docker', 'compose', '-f', owned, 'exec', '-T', 'caddy', 'caddy', 'reload', '--config', '/etc/caddy/Caddyfile'], cwd=directory)
     env_write(root / 'portal.env', env)
     compose(root, 'up', '-d', 'app')
     expected = health(root)['installation_id']
-    try:
-        req=urllib.request.Request(scheme+'://'+domain+'/portal/v1/health',headers={'User-Agent':'Starhub-Portal-Gateway-Check'})
-        with urllib.request.urlopen(req, timeout=20) as response:
-            result=json.loads(response.read(16 << 10))
-        if result and result.get('installation_id') == expected:
-            return 'Domain verified; IP entry remains available'
-    except (OSError, ValueError):
-        pass
-    if not free and not owned.exists():
-        raise RuntimeError('Existing proxy detected. Apply gateway/nginx-location.conf in Baota, configure certificate, then retry settings.')
-    raise RuntimeError('Gateway configured; DNS/certificate reachability not yet verified. Check local gateway logs.')
+    deadline=time.monotonic()+75
+    while time.monotonic()<deadline:
+        try:
+            req=urllib.request.Request(scheme+'://'+domain+'/portal/v1/health',headers={'User-Agent':'Starhub-Portal-Gateway-Check'})
+            with urllib.request.urlopen(req,timeout=5) as response:result=json.loads(response.read(16<<10))
+            if result.get('installation_id')==expected:
+                marker=read_json(root/'installation.json');marker['public_origin']=scheme+'://'+domain;write_private(root/'installation.json',marker)
+                return 'Domain verified with '+('existing Starhub certificate / Nginx' if linked else 'gateway')+'; IP entry remains available'
+        except (OSError,ValueError):pass
+        if not free and not owned.exists() and not linked:
+            raise RuntimeError('Existing Nginx/Baota detected: apply gateway/nginx-location.conf in that site and configure its certificate, then use Retry domain configuration.')
+        time.sleep(3)
+    raise RuntimeError('Domain gateway queued but end-to-end verification failed. Check DNS, upstream port, existing site mapping and HTTPS origin mode; retry the domain job.')
 
 
 def worker(root):
@@ -520,6 +551,9 @@ def uninstall(root, purge=False, confirm=''):
         run(['systemctl', 'daemon-reload'])
     if (root / 'gateway/compose.yaml').exists():
         run(['docker', 'compose', '-f', root / 'gateway/compose.yaml', 'down'], cwd=root / 'gateway')
+    if (root/'scripts/domain_bridge.py').exists():
+        import domain_bridge
+        domain_bridge.disable(root)
     compose(root, 'down', '--remove-orphans')
     if purge:
         verified = validate_root(root)
@@ -537,7 +571,8 @@ def main():
     parser.add_argument('action', choices=['install', 'update', 'worker', 'status', 'credentials', 'admin-reset', 'uninstall', 'repair-helper'])
     parser.add_argument('--root', type=Path, default=DEFAULT_ROOT)
     parser.add_argument('--port', type=int, default=18088)
-    parser.add_argument('--bind', default='0.0.0.0', choices=['0.0.0.0', '127.0.0.1'])
+    parser.add_argument('--bind', default='', choices=['','0.0.0.0','127.0.0.1','::','::1'])
+    parser.add_argument('--ip',default='',help='Direct IPv4/IPv6 entry; auto-detected when omitted. Independent of --origin domain.')
     parser.add_argument('--origin', default='')
     parser.add_argument('--admin-email', default='admin@starhub.local')
     parser.add_argument('--ask-password', action='store_true')
@@ -554,7 +589,8 @@ def main():
     elif args.action == 'uninstall': uninstall(root, args.purge_data, args.confirm)
     elif args.action == 'status':
         marker = read_json(root / 'installation.json')
-        print('IP entry: ' + marker['origin'])
+        print('IP entry: ' + marker.get('ip_origin',marker['origin']))
+        print('Preferred entry: '+marker.get('public_origin',marker['origin']))
         print('Health/version: ' + json.dumps(health(root), ensure_ascii=False))
     elif args.action == 'credentials':
         print(json.dumps(read_json(root / 'credentials.json'), ensure_ascii=False, indent=2))

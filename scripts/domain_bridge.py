@@ -66,6 +66,25 @@ def configure(root,domain,port,api=None):
     return True
 
 
+def disable(root,api=None):
+    marker=Path(root)/'gateway/control-proxy.json'
+    if not marker.exists():return False
+    if marker.is_symlink():raise ValueError('Unsafe gateway marker')
+    owned=json.loads(marker.read_text())
+    api=api or control_client()
+    if api is None:raise ValueError('Cannot disable the linked gateway without its control plane')
+    proxies=[p for p in api('reverse-proxies') if p['id']==owned['proxy_id']]
+    if proxies:
+        p=proxies[0]
+        if p['domain']!=owned['domain'] or p['upstream']!='http://127.0.0.1:'+str(owned['port']):
+            raise ValueError('Linked proxy changed ownership; refusing to disable it')
+        if p['enabled']:
+            body={k:p[k] for k in ['domain','upstream','certificate_id','options','version']}
+            api('reverse-proxies/'+p['id'],{**body,'enabled':False},'PUT')
+    marker.unlink()
+    return True
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('action',choices=['inspect','apply']);p.add_argument('domain');p.add_argument('--port',type=int,default=18088);p.add_argument('--root',type=Path,default=Path('/opt/starhub-portal'))

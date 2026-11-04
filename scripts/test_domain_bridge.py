@@ -25,4 +25,12 @@ class BridgeTests(unittest.TestCase):
             api=self.api(proxy);b.configure(Path(tmp),'buy.example.test',18088,api)
             self.assertFalse(any(c.kwargs or len(c.args)>1 for c in api.call_args_list))
 
+    def test_unbind_only_disables_the_owned_proxy_and_keeps_certificate(self):
+        proxy={'id':'same','domain':'buy.example.test','upstream':'http://127.0.0.1:18088','enabled':True,'certificate_id':'cert','options':{},'version':2}
+        with tempfile.TemporaryDirectory() as tmp:
+            api=self.api(proxy);b.configure(tmp,'buy.example.test',18088,api);b.disable(tmp,api)
+            api.assert_any_call('reverse-proxies/same',{**{k:proxy[k] for k in ['domain','upstream','certificate_id','options','version']},'enabled':False},'PUT')
+            self.assertFalse((Path(tmp)/'gateway/control-proxy.json').exists())
+            self.assertFalse(any(c.args[0].startswith('certificates/') for c in api.call_args_list))
+
 if __name__=='__main__':unittest.main()

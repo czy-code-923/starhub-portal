@@ -214,3 +214,45 @@ func (a *App) localWorker(w http.ResponseWriter, r *http.Request) error {
 	}
 	return bad("unknown worker action")
 }
+
+func (a *App) retryGateway(w http.ResponseWriter, r *http.Request) error {
+	if e := requireOwner(r); e != nil {
+		return e
+	}
+	ctx := r.Context()
+	s, _, e := a.settings(ctx)
+	if e != nil {
+		return e
+	}
+	tx, e := a.DB.Begin(ctx)
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback(ctx)
+	if e = lock(ctx, tx); e != nil {
+		return e
+	}
+	var busy bool
+	if e = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM jobs WHERE kind='gateway' AND state IN ('queued','working'))").Scan(&busy); e != nil {
+		return e
+	}
+	if busy {
+		return Problem{409, "已有域名任务排队或处理中，请先查看任务状态"}
+	}
+	payload, e := a.seal(map[string]any{"domain": s.Domain, "https": s.HTTPS, "origin": s.PublicOrigin})
+	if e != nil {
+		return e
+	}
+	id := ID()
+	if _, e = tx.Exec(ctx, "INSERT INTO jobs(id,kind,subject,payload) VALUES($1,'gateway',$2,$3)", id, ID(), payload); e != nil {
+		return e
+	}
+	if e = audit(ctx, tx, current(r).ID, "gateway.retry", s.Domain); e != nil {
+		return e
+	}
+	if e = tx.Commit(ctx); e != nil {
+		return e
+	}
+	send(w, 200, map[string]string{"id": id, "message": "域名检查与反代同步已排队；证书与真实应用入口分别校验，IP 入口保留"})
+	return nil
+}
