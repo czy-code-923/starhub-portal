@@ -17,10 +17,10 @@ class InstallerSafety(unittest.TestCase):
     def test_control_compatibility_only_requests_official_local_updater(self):
         from unittest.mock import Mock
         with tempfile.TemporaryDirectory() as tmp:
-            api=Mock(side_effect=lambda resource,*args:{'version':'0.24.2'} if resource=='session' else {'latest':'0.25.3','automatic_update':True} if resource=='panel-release' else {'id':'job'})
+            api=Mock(side_effect=lambda resource,*args:{'version':'0.24.2'} if resource=='session' else {'latest':'0.25.4','automatic_update':True} if resource=='panel-release' else {'id':'job'})
             self.assertIn('queued',m.control_compatibility(Path(tmp),api))
-            api.assert_any_call('panel-updates',{'current':'0.24.2','version':'0.25.3'},'POST')
-            ready=Mock(return_value={'version':'0.25.3'});self.assertIn('ready',m.control_compatibility(Path(tmp),ready));self.assertEqual(ready.call_count,1)
+            api.assert_any_call('panel-updates',{'current':'0.24.2','version':'0.25.4'},'POST')
+            ready=Mock(return_value={'version':'0.25.4'});self.assertIn('ready',m.control_compatibility(Path(tmp),ready));self.assertEqual(ready.call_count,1)
     def test_helper_uses_the_selected_loopback_family(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
@@ -35,6 +35,19 @@ class InstallerSafety(unittest.TestCase):
         args.ip='host.example.test'
         with self.assertRaises(ValueError):m.install_origins(args)
         with self.assertRaises(ValueError):m.address_origin('192.0.2.1',80)
+    def test_domain_cli_uses_local_identity_not_a_fixed_host(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/'portal';root.mkdir()
+            m.write_private(root/'installation.json',{'marker':m.MARKER,'origin':'http://198.51.100.50:19088','ip_origin':'http://198.51.100.50:19088'})
+            m.env_write(root/'compose.env',{'BIND_IP':'0.0.0.0','PORTAL_PORT':'19088'})
+            with patch('sys.argv',['manage.py','domain-disable','--root',str(root),'--allow-http']),patch.object(m,'local',return_value={'origin':'http://198.51.100.50:19088'}) as local:
+                m.main()
+                local.assert_called_once_with(root,'domain',{'domain':'','https':True,'ip_origin':'http://198.51.100.50:19088','allow_http':True})
+            m.env_write(root/'compose.env',{'BIND_IP':'127.0.0.1','PORTAL_PORT':'19088'})
+            with patch('sys.argv',['manage.py','domain-disable','--root',str(root),'--allow-http']),patch.object(m,'local') as local:
+                with self.assertRaises(ValueError):m.main()
+                local.assert_not_called()
     def archive(self, extra=None):
         stream = io.BytesIO()
         with zipfile.ZipFile(stream, 'w') as z:

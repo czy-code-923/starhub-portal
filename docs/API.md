@@ -72,3 +72,5 @@ Telegram approve 现在同时支持口令红包与 alipay_static / wechat_static
 `GET /catalog` 增加 effective_members 和 stock_synced；元数据/人数页面每 10 秒同步，expires_at 依据服务端当前时间即时判断。`GET /me/renewal` 的 requires_seat 表示原身份是否需要重新占位，满额不阻止已有有效身份续费。
 
 管理员修改套餐 group_ids/protocols 时递增独立 policy_revision，并事务性排队 policy 任务。通过星枢 0.25.2+ `PUT /commerce/accounts/{external_id}/policy` 同步各已购身份，body 绑定 user_id、subscription_id、source_id=plan_id 和递增 revision。接口不修改任何会计字段、凭据或有效期。`GET /admin/plans` 增加 effective_members、policy_pending、policy_failed；后台任务支持重试。`GET /me/service` 增加 policy_synced/policy_warning，订阅 check 在权限同步未完成时返回 ready=false 和明确 policy_pending，share 则 503，不伪装成客户端协议不兼容。客户端更新原订阅后取得新授权节点。
+
+0.10.0：本机受限 Worker Token 的 `POST /local/domain` 请求 `{domain,https,ip_origin,allow_http}` 只更新入口设置并排队网关任务。空 domain 使用显式 IP+端口 origin，HTTP 需 allow_http；不接受任意命令、路径、SQL 或监听地址。禁止与更新/网关任务并发，保留其他配置和密钥。CLI 会拒绝对原回环部署自动开放公网；不改 DNS、防火墙或星枢 Agent 地址。

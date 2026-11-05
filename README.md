@@ -2,13 +2,13 @@
 
 面向购买用户的独立套餐、支付与订阅面板。管理员管理分类、推荐、套餐、优惠码、邀请和工单；购买用户只访问自己的订单、流量、设备和订阅。Vue 3 + TypeScript、Go REST API、PostgreSQL，使用数据库任务队列，无 Redis 依赖。
 
-本项目配合 [星枢控制面](https://github.com/czy-code-923/czy-code) **0.25.3+ / `commerce_v1`**。主机、内核、节点和用户组仍由控制面管理；购买面板选择已有组与允许协议，不另外部署代理内核。
+本项目配合 [星枢控制面](https://github.com/czy-code-923/czy-code) **0.25.4+ / `commerce_v1`**。主机、内核、节点和用户组仍由控制面管理；购买面板选择已有组与允许协议，不另外部署代理内核。
 
 0.4.1 起每个新购订单单独创建代理身份、配额和订阅，同套餐多次购买分别管理。旧版尚未到期的合并权益自动迁移：旧链接作废，原剩余字节按 GB → 同数字 GiB 扩容后按订单额度比例分配，保留原合并权益的到期和重置日期；请购买用户重新复制各订单链接。历史订单、付款和核账记录保留。已有套餐转为同数字 GiB，20 GiB 与 Clash 的 20 G 对齐。
 
 套餐可逐条编辑最多 12 条展示信息（速率、适用场景等），仅作为介绍，不会修改实际限速。公告支持多条置顶，数字越小越靠前，同序号按新到旧显示。用户端不显示后台计费倍率。
 
-升级购买面板时，同机且已有受限本机星枢更新器会自动请求本版所需的官方兼容更新；外部星枢须先由管理员升级到 0.25.3+。更新包均校验 SHA-256，失败保留恢复路径。版本页显示兼容状态、独立身份容量和本面板容器资源。
+升级购买面板时，同机且已有受限本机星枢更新器会自动请求本版所需的官方兼容更新；外部星枢须先由管理员升级到 0.25.4+。更新包均校验 SHA-256，失败保留恢复路径。版本页显示兼容状态、独立身份容量和本面板容器资源。
 
 ## 运营功能
 
@@ -151,7 +151,7 @@ sudo python3 /opt/starhub-portal/scripts/manage.py update
 指定正式版本：
 
 ```sh
-sudo python3 /opt/starhub-portal/scripts/manage.py update --version 0.9.1
+sudo python3 /opt/starhub-portal/scripts/manage.py update --version 0.10.0
 ```
 
 助手未运行时：
@@ -183,3 +183,33 @@ sudo python3 /opt/starhub-portal/scripts/manage.py repair-helper
 - 主管理员在独立的「Telegram 通知」页面填写 Bot Token，按 Telegram **数字用户 ID** 授予概览、订单、核款及额外的口令查看权限。接收者须先私聊启动机器人；仅发送到已授权的私聊。
 - 命令 `/help`、`/overview`、`/orders`、`/payments`、`/redpacket 完整订单ID` 逐次校验权限。完整口令仅在同时具有核款和口令查看权限的私聊查询中返回，不提供机器人自动审批或领取红包。新订单、付款提交、审核结果及开通状态使用持久化队列通知，失败退避重试并可手动重试。
 - 独立命令模式拒绝接管已有 Webhook；不会删除其他程序的 Webhook。已有机器人被原后台轮询时请选择“仅发送通知”，或创建专用于购买面板的机器人。参考 [Telegram Bot API](https://core.telegram.org/bots/api) 和 [支付宝红包服务协议](https://render.alipay.com/p/yuyan/180020010001201259/gift/agreement.htm)。
+
+## 入口与域名一键操作
+
+以下是购买面板命令，读取当前安装的 IP 和端口，不固定任何 VPS。自定义安装目录时，将 `/opt/starhub-portal` 改成你的 `--root` 目录。
+
+查询当前购买面板地址及版本：
+
+```bash
+sudo python3 /opt/starhub-portal/scripts/manage.py status
+```
+
+开启购买面板域名（请把示例域名改成你的域名；需 DNS 已指向本机，并准备证书或让独立 Caddy 自动签发）：
+
+```bash
+sudo python3 /opt/starhub-portal/scripts/manage.py domain-enable --domain buy.example.com
+```
+
+关闭购买面板域名，切换为安装时记录的 IP＋端口（HTTP 为明文，因此需明确添加参数）：
+
+```bash
+sudo python3 /opt/starhub-portal/scripts/manage.py domain-disable --allow-http
+```
+
+命令保存设置并排队入口任务，可在后台“版本与更新”查看结果。仅修改本项目拥有的网关，不接管其他宝塔网站；回环部署不会自动扩大到公网监听，须通过原 SSH 隧道管理。已启用官方支付宝 HTTPS 回调时，先在后台停用该渠道再切换 HTTP；个人收款码不受此限制。Windows 用 `python "$env:ProgramData/StarhubPortal/scripts/manage.py"` 调用相同行为，或按自定义 `--root` 路径；Docker Desktop 需使用 Linux 容器模式。
+
+上述操作只管理购买面板入口。星枢总管理端查询/临时 IP 救援命令见[星枢安装说明](https://github.com/czy-code-923/czy-code#readme)，不要关闭 Agent 仍依赖的控制域名。购买面板切换域名不会修改星枢、Agent 或独立订阅域名。
+
+## 自动订阅与明确客户端
+
+自动链接不固定格式，由实际客户端请求头识别；管理端检查会验证至少一种完整配置格式，而不把服务端 HTTP 请求误认作用户客户端。AnyTLS 等协议可选择 Mihomo、sing-box 或 Hiddify；不支持协议的明确客户端仍会提示更换格式。sing-box 扫码请选择专属客户端格式。页面提供订阅链接与二维码，不提供配置下载。

@@ -156,6 +156,8 @@ func (a *App) localWorker(w http.ResponseWriter, r *http.Request) error {
 		return Problem{401, "unauthorized worker"}
 	}
 	switch r.PathValue("action") {
+	case "domain":
+		return a.localDomain(w, r)
 	case "heartbeat":
 		var b struct {
 			Status map[string]string `json:"status"`

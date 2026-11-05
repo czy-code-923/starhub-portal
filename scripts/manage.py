@@ -29,7 +29,7 @@ import urllib.request
 import zipfile
 
 REPO = 'czy-code-923/starhub-portal'
-MINIMUM_CONTROL = (0,25,3)
+MINIMUM_CONTROL = (0,25,4)
 VERSION = re.compile(r'^v?[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}$')
 MARKER = 'starhub-portal-v1'
 DEFAULT_ROOT = Path(os.environ.get('ProgramData', r'C:\ProgramData')) / 'StarhubPortal' if os.name == 'nt' else Path('/opt/starhub-portal')
@@ -523,7 +523,7 @@ def control_compatibility(root,api=None):
     latest=release.get('latest','')
     try:available=tuple(int(x) for x in latest.lstrip('v').split('.'))
     except ValueError:return 'waiting for official compatible release'
-    if available<MINIMUM_CONTROL:return 'waiting for Starhub 0.25.3+'
+    if available<MINIMUM_CONTROL:return 'waiting for Starhub 0.25.4+'
     if not release.get('automatic_update'):return 'control updater offline; update Starhub first'
     try:api('panel-updates',{'current':current,'version':latest},'POST')
     except RuntimeError as e:
@@ -626,12 +626,15 @@ def uninstall(root, purge=False, confirm=''):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['install', 'update', 'worker', 'status', 'credentials', 'admin-reset', 'uninstall', 'repair-helper'])
+    parser.add_argument('action', choices=['install', 'update', 'worker', 'status', 'credentials', 'admin-reset', 'uninstall', 'repair-helper', 'domain-enable', 'domain-disable'])
     parser.add_argument('--root', type=Path, default=DEFAULT_ROOT)
     parser.add_argument('--port', type=int, default=18088)
     parser.add_argument('--bind', default='', choices=['','0.0.0.0','127.0.0.1','::','::1'])
     parser.add_argument('--ip',default='',help='Direct IPv4/IPv6 entry; auto-detected when omitted. Independent of --origin domain.')
     parser.add_argument('--origin', default='')
+    parser.add_argument('--domain', default='')
+    parser.add_argument('--http', action='store_true', help='Use HTTP domain instead of HTTPS')
+    parser.add_argument('--allow-http', action='store_true', help='Explicitly permit HTTP access on your trusted network')
     parser.add_argument('--admin-email', default='admin@starhub.local')
     parser.add_argument('--ask-password', action='store_true')
     parser.add_argument('--version', default='latest')
@@ -642,6 +645,14 @@ def main():
         install(args)
         return
     root = validate_root(args.root)
+    if args.action in ('domain-enable','domain-disable'):
+        marker=read_json(root/'installation.json')
+        if args.action=='domain-enable' and not args.domain:raise ValueError('Use --domain your.example.com')
+        if args.action=='domain-disable':
+            bind=environment(root/'compose.env').get('BIND_IP','0.0.0.0').strip('[]')
+            if bind in ('127.0.0.1','::1'):raise ValueError('This installation is loopback-only. Keep the SSH tunnel; configure an explicit public bind before switching the public entry.')
+        result=local(root,'domain',{'domain':args.domain if args.action=='domain-enable' else '', 'https':not args.http,'ip_origin':marker.get('ip_origin',marker['origin']),'allow_http':args.allow_http})
+        print(json.dumps(result,ensure_ascii=False));return
     if args.action == 'worker': worker(root)
     elif args.action == 'update': print(update(root, args.version))
     elif args.action == 'uninstall': uninstall(root, args.purge_data, args.confirm)
