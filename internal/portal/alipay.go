@@ -216,6 +216,9 @@ func (a *App) pay(w http.ResponseWriter, r *http.Request) error {
 	if state != "pending" || !expires.After(a.now()) {
 		return bad("订单不可支付或已过期")
 	}
+	if e = checkRenewalInvoice(r.Context(), tx, r.PathValue("id"), a.now()); e != nil {
+		return e
+	}
 	var channelID, paymentID, outNo string
 	var encrypted []byte
 	e = tx.QueryRow(r.Context(), "SELECT p.id,p.out_trade_no,p.channel_id,c.config FROM payments p JOIN payment_channels c ON c.id=p.channel_id WHERE p.order_id=$1", r.PathValue("id")).Scan(&paymentID, &outNo, &channelID, &encrypted)
@@ -350,7 +353,12 @@ func (a *App) recordPayment(ctx context.Context, paymentID string, p paymentResu
 			return bad("交易号不匹配")
 		}
 		if state == "pending" {
-			if !p.Paid.Before(expires) {
+			renewalErr := checkRenewalInvoice(ctx, tx, orderID, p.Paid)
+			var policy Problem
+			if renewalErr != nil && !errors.As(renewalErr, &policy) {
+				return renewalErr
+			}
+			if !p.Paid.Before(expires) || renewalErr != nil {
 				_, e = tx.Exec(ctx, "UPDATE orders SET state='late_paid',paid_at=$2 WHERE id=$1", orderID, p.Paid)
 			} else {
 				if _, e = tx.Exec(ctx, "UPDATE orders SET state='paid',paid_at=$2,fulfillment='queued' WHERE id=$1", orderID, p.Paid); e != nil {

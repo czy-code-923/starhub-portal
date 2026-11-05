@@ -1,6 +1,7 @@
 package portal
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -17,21 +18,22 @@ type Buy struct {
 	Key       string `json:"request_key"`
 }
 type Quote struct {
-	Plan       Plan      `json:"-"`
-	Price      Price     `json:"-"`
-	CouponID   string    `json:"-"`
-	Base       int64     `json:"base_amount"`
-	Discount   int64     `json:"discount_amount"`
-	Payable    int64     `json:"payable"`
-	Expires    time.Time `json:"expires_at"`
-	CouponCode string    `json:"coupon_code"`
-	PlanName   string    `json:"plan_name"`
-	Months     int       `json:"months"`
-	Quota      int64     `json:"quota_bytes"`
+	Plan            Plan       `json:"-"`
+	Price           Price      `json:"-"`
+	CouponID        string     `json:"-"`
+	Base            int64      `json:"base_amount"`
+	Discount        int64      `json:"discount_amount"`
+	Payable         int64      `json:"payable"`
+	Expires         time.Time  `json:"expires_at"`
+	CouponCode      string     `json:"coupon_code"`
+	PlanName        string     `json:"plan_name"`
+	Months          int        `json:"months"`
+	Quota           int64      `json:"quota_bytes"`
+	RenewalDeadline *time.Time `json:"renewal_deadline,omitempty"`
 }
 
 func (a *App) catalog(w http.ResponseWriter, r *http.Request) error {
-	s, _, e := a.settings(r.Context())
+	s, secret, e := a.settings(r.Context())
 	if e != nil {
 		return e
 	}
@@ -48,11 +50,13 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request) error {
 			return Problem{401, "请登录后查看套餐"}
 		}
 	}
+	r = r.WithContext(context.WithValue(r.Context(), controlSecretKey{}, secret))
+	groupMetadata, groupErr := a.commercialGroups(r.Context(), false)
 	cats, e := jsonRows(r.Context(), a.DB, "SELECT COALESCE(jsonb_agg(c ORDER BY c.sort,c.name),'[]') FROM categories c WHERE enabled")
 	if e != nil {
 		return e
 	}
-	rows, e := a.DB.Query(r.Context(), `SELECT to_jsonb(p),(SELECT count(*) FROM orders o WHERE o.plan_id=p.id AND o.renewal_of IS NULL AND o.state IN ('pending','paid','refund_pending')) FROM plans p JOIN categories c ON c.id=p.category_id WHERE p.enabled AND c.enabled AND p.starts_at<=$1 AND p.ends_at>$1 ORDER BY p.sort,p.name LIMIT 100`, a.now())
+	rows, e := a.DB.Query(r.Context(), `SELECT to_jsonb(p),(SELECT count(*) FROM orders o WHERE o.plan_id=p.id AND o.state IN ('pending','paid','refund_pending')) FROM plans p JOIN categories c ON c.id=p.category_id WHERE p.deleted_at IS NULL AND p.enabled AND c.enabled AND p.starts_at<=$1 AND p.ends_at>$1 ORDER BY p.sort,p.name LIMIT 100`, a.now())
 	if e != nil {
 		return e
 	}
@@ -78,7 +82,7 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request) error {
 		if p.Stock > 0 {
 			remaining = max(0, p.Stock-stockUsed)
 		}
-		plans = append(plans, map[string]any{"stock_limit": p.Stock, "remaining_stock": remaining, "sold_out": p.Stock > 0 && stockUsed >= p.Stock, "id": p.ID, "category_id": p.CategoryID, "name": p.Name, "description": p.Description, "recommended": p.Recommended && !a.now().Before(p.RecommendStarts) && a.now().Before(p.RecommendEnds), "quota_bytes": p.Quota, "quota_unit": p.QuotaUnit, "display_features": p.DisplayFeatures, "prices": prices, "protocols": p.Protocols, "max_devices": p.MaxDevices, "allow_new": p.AllowNew, "allow_renew": p.AllowRenew, "simulation": p.Simulation})
+		plans = append(plans, map[string]any{"stock_limit": p.Stock, "remaining_stock": remaining, "sold_out": p.Stock > 0 && stockUsed >= p.Stock, "id": p.ID, "category_id": p.CategoryID, "name": p.Name, "description": p.Description, "recommended": p.Recommended && !a.now().Before(p.RecommendStarts) && a.now().Before(p.RecommendEnds), "quota_bytes": p.Quota, "quota_unit": p.QuotaUnit, "display_features": p.DisplayFeatures, "prices": prices, "protocols": selectedProtocols(groupMetadata, p.Groups, p.Protocols), "protocols_verified": groupErr == nil, "max_devices": p.MaxDevices, "allow_new": p.AllowNew, "allow_renew": p.AllowRenew, "simulation": p.Simulation})
 	}
 	if e = rows.Err(); e != nil {
 		return e
@@ -89,7 +93,7 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request) error {
 func (a *App) calculate(r *http.Request, tx pgx.Tx, b Buy) (Quote, error) {
 	q := Quote{}
 	var data json.RawMessage
-	e := tx.QueryRow(r.Context(), `SELECT to_jsonb(p) FROM plans p JOIN categories c ON c.id=p.category_id WHERE p.id=$1 AND p.enabled AND c.enabled AND p.starts_at<=$2 AND p.ends_at>$2`, b.PlanID, a.now()).Scan(&data)
+	e := tx.QueryRow(r.Context(), `SELECT to_jsonb(p) FROM plans p JOIN categories c ON c.id=p.category_id WHERE p.id=$1 AND p.deleted_at IS NULL AND p.enabled AND c.enabled AND p.starts_at<=$2 AND p.ends_at>$2`, b.PlanID, a.now()).Scan(&data)
 	if e != nil {
 		return q, bad("套餐未上架或不在销售期")
 	}
@@ -129,30 +133,35 @@ func (a *App) calculate(r *http.Request, tx pgx.Tx, b Buy) (Quote, error) {
 		if e != nil {
 			return q, e
 		}
-		state, _ := u["state"].(string)
-		if state != "active" && state != "expired" && state != "exhausted" {
-			return q, Problem{409, "订阅已删除或停用，不能续费，请联系管理员"}
+		deadline, err := renewalWindow(u, a.now())
+		if err != nil {
+			return q, err
 		}
+		q.RenewalDeadline = &deadline
 	} else {
 		if !p.AllowNew {
 			return q, bad("套餐暂不接受新订阅，请从已有订阅续费")
 		}
-		if p.Stock > 0 {
-			var used int
-			if e = tx.QueryRow(r.Context(), "SELECT count(*) FROM orders WHERE plan_id=$1 AND renewal_of IS NULL AND state IN ('pending','paid','refund_pending')", p.ID).Scan(&used); e != nil {
-				return q, e
-			}
-			if used >= p.Stock {
-				return q, Problem{409, "套餐销售名额已满"}
-			}
-		}
+
 		if e = a.checkGroups(r.Context(), p.Groups, p.Protocols); e != nil {
 			return q, e
+		}
+	}
+	if p.Stock > 0 {
+		var used int
+		if e = tx.QueryRow(r.Context(), inventoryCountSQL, p.ID).Scan(&used); e != nil {
+			return q, e
+		}
+		if used >= p.Stock {
+			return q, Problem{409, "套餐销售名额已满，新购与续费均需剩余名额"}
 		}
 	}
 	q.Base = q.Price.Amount
 	q.Payable = q.Base
 	q.Expires = a.now().Add(15 * time.Minute)
+	if q.RenewalDeadline != nil && q.RenewalDeadline.Before(q.Expires) {
+		q.Expires = *q.RenewalDeadline
+	}
 	if p.Ends.Before(q.Expires) {
 		q.Expires = p.Ends
 	}
@@ -309,7 +318,7 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) error {
 	}
 	id := ID()
 	snapshot := map[string]any{"plan": q.Plan, "price": q.Price, "coupon_code": q.CouponCode, "discount_amount": q.Discount}
-	_, e = tx.Exec(r.Context(), `INSERT INTO orders(id,customer_id,plan_id,price_id,snapshot,base_amount,discount_amount,payable,coupon_id,expires_at,request_key,request_hash,renewal_of) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11,$12,NULLIF($13,''))`, id, current(r).ID, b.PlanID, b.PriceID, raw(snapshot), q.Base, q.Discount, q.Payable, q.CouponID, q.Expires, b.Key, requestHash, b.RenewalOf)
+	_, e = tx.Exec(r.Context(), `INSERT INTO orders(id,customer_id,plan_id,price_id,snapshot,base_amount,discount_amount,payable,coupon_id,expires_at,request_key,request_hash,renewal_of,renewal_deadline_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11,$12,NULLIF($13,''),$14)`, id, current(r).ID, b.PlanID, b.PriceID, raw(snapshot), q.Base, q.Discount, q.Payable, q.CouponID, q.Expires, b.Key, requestHash, b.RenewalOf, q.RenewalDeadline)
 	if e != nil {
 		return e
 	}
@@ -327,7 +336,7 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) error {
 }
 func (a *App) orders(w http.ResponseWriter, r *http.Request) error {
 	_ = a.refreshServiceStates(r.Context())
-	data, e := jsonRows(r.Context(), a.DB, `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,plan_id,price_id,renewal_of,COALESCE(renewal_of,id) service_id,(SELECT s.remote_state FROM service_accounts s WHERE s.order_id=COALESCE(o.renewal_of,o.id)) service_state,(SELECT s.remote_checked_at FROM service_accounts s WHERE s.order_id=COALESCE(o.renewal_of,o.id)) service_checked_at,EXISTS(SELECT 1 FROM service_accounts s WHERE s.order_id=COALESCE(o.renewal_of,o.id)) has_subscription,(SELECT state FROM manual_payments m WHERE m.order_id=o.id) manual_state,snapshot->'plan'->>'name' plan_name,base_amount,discount_amount,payable,state,fulfillment,expires_at,paid_at,created_at FROM orders o WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 100)x`, current(r).ID)
+	data, e := jsonRows(r.Context(), a.DB, `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,plan_id,price_id,renewal_of,COALESCE(renewal_of,id) service_id,COALESCE((SELECT s.hidden_at IS NOT NULL FROM service_accounts s WHERE s.order_id=COALESCE(o.renewal_of,o.id)),false) subscription_hidden,(SELECT s.remote_state FROM service_accounts s WHERE s.order_id=COALESCE(o.renewal_of,o.id)) service_state,(SELECT s.remote_checked_at FROM service_accounts s WHERE s.order_id=COALESCE(o.renewal_of,o.id)) service_checked_at,EXISTS(SELECT 1 FROM service_accounts s WHERE s.order_id=COALESCE(o.renewal_of,o.id)) has_subscription,(SELECT state FROM manual_payments m WHERE m.order_id=o.id) manual_state,snapshot->'plan'->>'name' plan_name,base_amount,discount_amount,payable,state,fulfillment,expires_at,paid_at,created_at FROM orders o WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 100)x`, current(r).ID)
 	if e != nil {
 		return e
 	}

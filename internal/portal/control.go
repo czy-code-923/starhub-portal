@@ -98,6 +98,9 @@ func (a *App) control(ctx context.Context, method, path string, body, out any) e
 	return json.Unmarshal(data, out)
 }
 func (a *App) checkGroups(ctx context.Context, groups, protocols []string) error {
+	if e := a.checkProtocolSelection(ctx, groups, protocols); e != nil {
+		return e
+	}
 	var result struct {
 		Ready  bool   `json:"ready"`
 		Reason string `json:"reason"`
@@ -135,6 +138,14 @@ func (a *App) service(w http.ResponseWriter, r *http.Request) error {
 	safe["order_id"] = selected.Order
 	safe["quota_unit"] = selected.Unit
 	safe["legacy_combined"] = selected.Legacy
+	deadline, windowErr := renewalWindow(u, a.now())
+	safe["renewal_window_open"] = windowErr == nil
+	if !deadline.IsZero() {
+		safe["renewal_deadline"] = deadline
+	}
+	if windowErr != nil {
+		safe["renewal_unavailable_reason"] = windowErr.Error()
+	}
 	send(w, 200, map[string]any{"service": safe})
 	return nil
 }

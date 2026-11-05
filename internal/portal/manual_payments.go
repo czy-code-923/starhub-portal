@@ -188,6 +188,9 @@ func (a *App) beginManualPayment(w http.ResponseWriter, r *http.Request, method 
 	if state != "pending" || !expiry.After(a.now()) {
 		return bad("订单已过期或不可支付")
 	}
+	if e = checkRenewalInvoice(ctx, tx, r.PathValue("id"), a.now()); e != nil {
+		return e
+	}
 	var official bool
 	if e = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1)", r.PathValue("id")).Scan(&official); e != nil {
 		return e
@@ -292,6 +295,9 @@ func (a *App) submitReceipt(w http.ResponseWriter, r *http.Request) error {
 	}
 	if orderState != "pending" || !expiry.After(a.now()) || state == "approved" || state == "cancelled" {
 		return Problem{409, "付款窗口已关闭；已转账但未提交的请通过工单联系管理员核实"}
+	}
+	if e = checkRenewalInvoice(ctx, tx, r.PathValue("id"), a.now()); e != nil {
+		return e
 	}
 	if b.Image == "" {
 		img, mime = oldImage, oldMime
@@ -454,6 +460,9 @@ func (a *App) reviewManual(ctx context.Context, reviewer actor, id string, b man
 		}
 		if !b.At.Before(paymentEnd) || b.At.Before(created.Add(-time.Minute)) {
 			return "", bad("到账时间不在本订单付款/核验窗口内，不能直接开通，请人工处理退款或新订单")
+		}
+		if e = checkRenewalInvoice(ctx, tx, order, b.At); e != nil {
+			return "", e
 		}
 		_, e = tx.Exec(ctx, `UPDATE manual_payments SET state='approved',verified_reference=$2,received_amount=$3,received_at=$4,review_note=$5,reviewed_by=$6,reviewed_at=now(),version=version+1 WHERE id=$1`, id, b.Reference, b.Amount, b.At, b.Note, reviewer.ID)
 		if e != nil {

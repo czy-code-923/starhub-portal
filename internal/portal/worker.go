@@ -94,7 +94,8 @@ func (a *App) fulfill(ctx context.Context, order string) error {
 	var created time.Time
 	var perOrder bool
 	var savedPayload []byte
-	if e := a.DB.QueryRow(ctx, "SELECT customer_id,state,snapshot,created_at,per_order,fulfillment_payload,fulfillment,COALESCE(renewal_of,'') FROM orders WHERE id=$1", order).Scan(&user, &state, &snap, &created, &perOrder, &savedPayload, &fulfillment, &renewalOf); e != nil {
+	var paidAt, renewalDeadline *time.Time
+	if e := a.DB.QueryRow(ctx, "SELECT customer_id,state,snapshot,created_at,per_order,fulfillment_payload,fulfillment,COALESCE(renewal_of,''),paid_at,renewal_deadline_at FROM orders WHERE id=$1", order).Scan(&user, &state, &snap, &created, &perOrder, &savedPayload, &fulfillment, &renewalOf, &paidAt, &renewalDeadline); e != nil {
 		return e
 	}
 	if state != "paid" || fulfillment == "active" {
@@ -114,6 +115,16 @@ func (a *App) fulfill(ctx context.Context, order string) error {
 		return e
 	}
 	defer conn.Exec(context.Background(), "SELECT pg_advisory_unlock(hashtext($1))", "portal-user:"+user)
+	if e = conn.QueryRow(ctx, "SELECT state,fulfillment,paid_at,renewal_deadline_at FROM orders WHERE id=$1", order).Scan(&state, &fulfillment, &paidAt, &renewalDeadline); e != nil {
+		return e
+	}
+	if state != "paid" || fulfillment == "active" {
+		return nil
+	}
+	if renewalOf != "" && (paidAt == nil || renewalDeadline == nil || !paidAt.Before(*renewalDeadline)) {
+		return Problem{409, "续费付款不在到期后 3 天的有效期限内，请人工核对"}
+	}
+
 	var earlier bool
 	if e = conn.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM orders WHERE customer_id=$1 AND state='paid' AND fulfillment<>'active' AND NOT per_order AND (created_at,id)<($2,$3))`, user, created, order).Scan(&earlier); e != nil {
 		return e
@@ -173,9 +184,15 @@ func (a *App) fulfill(ctx context.Context, order string) error {
 			return err
 		}
 	}
+	expected := body
+	body = nil
 	if e = a.unseal(savedPayload, &body); e != nil {
 		return e
 	}
+	if renewalOf != "" && string(raw(body)) != string(raw(expected)) {
+		return Problem{409, "续费订单与冻结的原订阅身份不一致，请人工核对"}
+	}
+
 	if e = a.control(ctx, "POST", path, body, &result); e != nil {
 		return e
 	}

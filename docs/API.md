@@ -55,6 +55,14 @@ Telegram approve 现在同时支持口令红包与 alipay_static / wechat_static
 `GET /admin/record-retention?kind=jobs|audit` 需对应 jobs/audit 权限，返回固定保留策略、条数和 can_clear。`POST` 同路径仅主管理员可执行，需 CSRF 和 `{confirmed:true}`；audit 清空后留下此次清理标记，jobs 仅删除 succeeded / rolled_back。工作中和待重试任务、财务与幂等凭据不可通过此接口删除。
 
 
-0.7.0：`GET /catalog` 增加每套餐 `stock_limit`、`remaining_stock`、`sold_out` 及响应 `stock_checked_at`；不限名额时 remaining_stock=null。新购 pending / paid / refund_pending 占名额，续费不占名额。可见套餐页每 10 秒刷新，创建订单在数据库事务锁中复核余量。
+0.7.0：`GET /catalog` 增加每套餐 `stock_limit`、`remaining_stock`、`sold_out` 及响应 `stock_checked_at`；不限名额时 remaining_stock=null。0.8.0 起新购和续费的 pending / paid / refund_pending 均占用 1 个名额；取消未付款订单释放，隐藏订阅记录不释放。可见套餐页每 10 秒刷新，创建订单在数据库事务锁中复核余量。
 
 `GET /me/renewal?service=<原订阅订单ID>` 返回可用续费价格、服务状态、注意事项和已有待处理续费订单，仅本用户可读。`POST /checkout/quote` 与 `POST /orders` 可加 `renewal_of=<原服务订单ID>`：须同套餐且允许续费，优惠码规则沿用结算服务；同一订阅只允许一个待支付 / 待生效续费。订单列表和详情增加 renewal_of 和 service_id，客户端应使用 service_id 进入原订阅。幂等键绑定续费目标，不可改为其他订阅或新购。已核验续费通过星枢 0.25.1+ commerce/renewals 延长期限；不会新增 service_accounts 或重新创建已删除身份，清理任务历史后也不会重复续期。续费只延长时长，不改当前额度、用量、权限和重置时间。
+
+0.8.0：正式套餐保存、结算和新身份开通须实时核验所选用户组存在且提供所有已勾选的可计费协议。`GET /catalog` 的 protocols 仅返回实际选择与所选组的交集，protocols_verified=false 时客户端显示待同步，不声明支持任何协议。分组元数据缓存最多 30 秒，写入和结算不使用缓存。
+
+`DELETE /admin/plans`（plans 权限）请求 `{id,version,confirmed:true}` 软删除并下架套餐，阻止新购和新续费订单；已有有效订单按快照处理，原服务及财务账本保留。`GET /admin/plans?deleted=1` 查看已删除套餐；`POST /admin/plans/restore` 同样请求体恢复为下架状态。编辑已删除套餐返回 409。
+
+`DELETE /me/services/{id}` 请求 `{confirmed:true}`，只移除本人失效/删除服务的列表记录；有效、状态未知及仍有待处理续费的服务返回 409。`GET /me/services?hidden=1` 分页查询已移除记录；`POST /me/services/{id}/restore` 恢复显示，不恢复代理权限。隐藏后不展示导入链接，订单返回 subscription_hidden=true。
+
+续费截止为星枢原服务 expires_at + 72 小时（严格小于截止时间）。`GET /me/service` 返回 renewal_window_open、renewal_deadline、renewal_unavailable_reason；`GET /me/renewal` 返回截止、remaining_stock 和不可用 reason。报价/下单重新核验原服务、套餐销售余量；每单续费占用同套餐 1 份名额，未付款也预留。订单 expires_at 不超过续费截止；报价返回 renewal_deadline。开始付款、提交凭证、审批及开通均验证截止。期限内实际到账可在之后核验，核验时间不替代实际付款时间；迟到支付宝回调进入 late_paid 人工核账，不自动续期。已核验历史权益不追溯撤销。

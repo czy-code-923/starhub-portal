@@ -28,7 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const Version = "0.7.0"
+const Version = "0.8.0"
 const Repository = "czy-code-923/starhub-portal"
 
 //go:embed migrations/*.sql
@@ -50,6 +50,7 @@ type App struct {
 	nextHealthSync  time.Time
 	retentionMu     sync.Mutex
 	nextRetention   time.Time
+	commercialCache groupCache
 }
 type Problem struct {
 	Status  int
@@ -364,6 +365,9 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("GET /portal/v1/me/service", a.auth(a.service, false))
 	m.HandleFunc("GET /portal/v1/me/services", a.auth(a.services, false))
 	m.HandleFunc("GET /portal/v1/me/renewal", a.auth(a.renewalOptions, false))
+	m.HandleFunc("DELETE /portal/v1/me/services/{id}", a.auth(a.serviceVisibility, false))
+	m.HandleFunc("POST /portal/v1/me/services/{id}/restore", a.auth(a.serviceVisibility, false))
+	m.HandleFunc("POST /portal/v1/admin/plans/restore", a.auth(a.planLifecycle, true))
 	m.HandleFunc("GET /portal/v1/admin/record-retention", a.auth(a.recordRetention, true))
 	m.HandleFunc("POST /portal/v1/admin/record-retention", a.auth(a.recordRetention, true))
 	m.HandleFunc("GET /portal/v1/me/subscription/{view}", a.auth(a.subscription, false))

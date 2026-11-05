@@ -19,12 +19,23 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 			return e
 		}
 	}
+	if kind == "plans" && r.Method == "DELETE" {
+		return a.planLifecycle(w, r)
+	}
 	if kind == "customers" && r.Method == "DELETE" {
 		r.SetPathValue("kind", kind)
 		return a.deleteAccount(w, r)
 	}
 	if kind == "customers" && r.Method == "GET" {
 		data, e := jsonRows(r.Context(), a.DB, `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,email,name,role,status,admin_version,deleted_at,created_at,email_verified_at FROM customers WHERE role='customer' AND (deleted_at IS NOT NULL)=$1 ORDER BY created_at DESC LIMIT 500)x`, r.URL.Query().Get("deleted") == "1")
+		if e != nil {
+			return e
+		}
+		send(w, 200, data)
+		return nil
+	}
+	if kind == "plans" && r.Method == "GET" {
+		data, e := jsonRows(r.Context(), a.DB, "SELECT COALESCE(jsonb_agg(p ORDER BY p.sort,p.name),'[]') FROM plans p WHERE (deleted_at IS NOT NULL)=$1", r.URL.Query().Get("deleted") == "1")
 		if e != nil {
 			return e
 		}
@@ -191,6 +202,11 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 			}
 			seen[p.ID] = true
 		}
+		if !b.Simulation {
+			if e = a.checkProtocolSelection(r.Context(), b.Groups, b.Protocols); e != nil {
+				return e
+			}
+		}
 		if b.Enabled && !b.Simulation {
 			if e = a.checkGroups(r.Context(), b.Groups, b.Protocols); e != nil {
 				return e
@@ -207,7 +223,7 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 			id = ID()
 			_, e = tx.Exec(r.Context(), `INSERT INTO plans(id,category_id,name,description,enabled,recommended,sort,starts_at,ends_at,recommend_starts_at,recommend_ends_at,quota_bytes,group_ids,protocols,prices,max_devices,billing_mode,multiplier_milli,stock,allow_new,allow_renew,simulation,quota_unit,display_features) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`, id, b.CategoryID, b.Name, b.Description, b.Enabled, b.Recommended, b.Sort, b.Starts, b.Ends, b.RecommendStarts, b.RecommendEnds, b.Quota, raw(b.Groups), raw(b.Protocols), raw(b.Prices), b.MaxDevices, b.Billing, b.Multiplier, b.Stock, b.AllowNew, b.AllowRenew, b.Simulation, b.QuotaUnit, raw(b.DisplayFeatures))
 		} else {
-			tag, err := tx.Exec(r.Context(), `UPDATE plans SET category_id=$3,name=$4,description=$5,enabled=$6,recommended=$7,sort=$8,starts_at=$9,ends_at=$10,recommend_starts_at=$11,recommend_ends_at=$12,quota_bytes=$13,group_ids=$14,protocols=$15,prices=$16,max_devices=$17,billing_mode=$18,multiplier_milli=$19,stock=$20,allow_new=$21,allow_renew=$22,simulation=$23,quota_unit=$24,display_features=$25,version=version+1 WHERE id=$1 AND version=$2`, id, b.Version, b.CategoryID, b.Name, b.Description, b.Enabled, b.Recommended, b.Sort, b.Starts, b.Ends, b.RecommendStarts, b.RecommendEnds, b.Quota, raw(b.Groups), raw(b.Protocols), raw(b.Prices), b.MaxDevices, b.Billing, b.Multiplier, b.Stock, b.AllowNew, b.AllowRenew, b.Simulation, b.QuotaUnit, raw(b.DisplayFeatures))
+			tag, err := tx.Exec(r.Context(), `UPDATE plans SET category_id=$3,name=$4,description=$5,enabled=$6,recommended=$7,sort=$8,starts_at=$9,ends_at=$10,recommend_starts_at=$11,recommend_ends_at=$12,quota_bytes=$13,group_ids=$14,protocols=$15,prices=$16,max_devices=$17,billing_mode=$18,multiplier_milli=$19,stock=$20,allow_new=$21,allow_renew=$22,simulation=$23,quota_unit=$24,display_features=$25,version=version+1 WHERE id=$1 AND version=$2 AND deleted_at IS NULL`, id, b.Version, b.CategoryID, b.Name, b.Description, b.Enabled, b.Recommended, b.Sort, b.Starts, b.Ends, b.RecommendStarts, b.RecommendEnds, b.Quota, raw(b.Groups), raw(b.Protocols), raw(b.Prices), b.MaxDevices, b.Billing, b.Multiplier, b.Stock, b.AllowNew, b.AllowRenew, b.Simulation, b.QuotaUnit, raw(b.DisplayFeatures))
 			e = err
 			if e == nil && tag.RowsAffected() != 1 {
 				return Problem{409, "套餐已变化，请刷新"}

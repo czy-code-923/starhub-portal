@@ -28,6 +28,10 @@ func TestStockAndRenewalKeepOneServiceAndPreserveOrderIdempotency(t *testing.T) 
 	expect(t, f.order(plan, ID(), &f.other, ""), 409)
 	expect(t, f.req("GET", "me/renewal?service="+root, nil, &f.other, true), 404)
 	expect(t, f.req("GET", "me/renewal?service="+root, nil, &f.customer, true), 200)
+	expect(t, f.req("POST", "checkout/quote", Buy{PlanID: plan, PriceID: "MONTH", Key: ID(), RenewalOf: root}, &f.customer, true), 409)
+	if _, e := f.a.DB.Exec(ctx, "UPDATE plans SET stock=2 WHERE id=$1", plan); e != nil {
+		t.Fatal(e)
+	}
 	checks := f.checks.Load()
 	f.ready.Store(false)
 	body := map[string]any{"plan_id": plan, "price_id": "MONTH", "request_key": ID(), "renewal_of": root}
@@ -78,7 +82,7 @@ func TestStockAndRenewalKeepOneServiceAndPreserveOrderIdempotency(t *testing.T) 
 	expect(t, catalog, 200)
 	p = object(t, catalog)["plans"].([]any)[0].(map[string]any)
 	if p["remaining_stock"] != float64(0) {
-		t.Fatal("renewal consumed or freed stock", p)
+		t.Fatal("renewal failed to consume its reserved slot", p)
 	}
 	if _, e := f.a.DB.Exec(ctx, "UPDATE plans SET stock=3,allow_new=false WHERE id=$1", plan); e != nil {
 		t.Fatal(e)

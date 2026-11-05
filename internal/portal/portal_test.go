@@ -29,6 +29,8 @@ type fixture struct {
 	a                      *App
 	handler                http.Handler
 	ready                  atomic.Bool
+	expiry                 atomic.Pointer[time.Time]
+	missing                atomic.Bool
 	grants                 atomic.Int32
 	renewals               atomic.Int32
 	checks                 atomic.Int32
@@ -77,12 +79,18 @@ func setup(t *testing.T) *fixture {
 			for rows.Next() {
 				var id string
 				_ = rows.Scan(&id)
-				items = append(items, map[string]any{"id": id, "enabled": true, "active": true, "expires_at": time.Now().Add(24 * time.Hour), "quota_bytes": int64(100000000000), "used_bytes": 0})
+				items = append(items, map[string]any{"id": id, "enabled": true, "active": true, "expires_at": f.coreExpiry(), "quota_bytes": int64(100000000000), "used_bytes": 0})
 			}
 			rows.Close()
 			send(w, 200, map[string]any{"items": items, "next_cursor": ""})
 		case strings.HasPrefix(r.URL.Path, "/api/v1/proxy-users/") && !strings.HasSuffix(r.URL.Path, "/devices"):
-			send(w, 200, map[string]any{"enabled": true, "active": true, "expires_at": time.Now().Add(24 * time.Hour), "quota_bytes": int64(100000000000), "used_bytes": 0})
+			if f.missing.Load() {
+				send(w, 404, map[string]string{"error": "not found"})
+				return
+			}
+			send(w, 200, map[string]any{"enabled": true, "active": true, "expires_at": f.coreExpiry(), "quota_bytes": int64(100000000000), "used_bytes": 0})
+		case r.URL.Path == "/api/v1/commerce/groups":
+			send(w, 200, map[string]any{"groups": []any{map[string]any{"id": strings.Repeat("d", 32), "services": []any{map[string]any{"protocol": "vless", "managed_users": true}, map[string]any{"protocol": "anytls", "managed_users": true}, map[string]any{"protocol": "hysteria2", "managed_users": true}}}}})
 		case r.URL.Path == "/api/v1/commerce/capacity":
 			send(w, 200, map[string]int{"remaining_identities": 400, "identity_limit": 500, "identities": 100})
 		case r.URL.Path == "/api/v1/commerce/validate":
@@ -120,6 +128,12 @@ func setup(t *testing.T) *fixture {
 	f.customer = f.user("one@example.test", "customer")
 	f.other = f.user("two@example.test", "customer")
 	return f
+}
+func (f *fixture) coreExpiry() time.Time {
+	if v := f.expiry.Load(); v != nil {
+		return *v
+	}
+	return time.Now().Add(24 * time.Hour)
 }
 func (f *fixture) user(email, role string) actor {
 	f.t.Helper()
@@ -447,6 +461,8 @@ func TestDisableDuringGrantAndLostMappingAreRevoked(t *testing.T) {
 	var revoked atomic.Int32
 	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/groups"):
+			send(w, 200, map[string]any{"groups": []any{map[string]any{"id": strings.Repeat("d", 32), "services": []any{map[string]any{"protocol": "vless", "managed_users": true}}}}})
 		case strings.HasSuffix(r.URL.Path, "/validate"):
 			send(w, 200, map[string]bool{"ready": true})
 		case strings.HasSuffix(r.URL.Path, "/entitlements"):
