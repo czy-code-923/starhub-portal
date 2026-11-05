@@ -43,7 +43,7 @@ func (a *App) localDomain(w http.ResponseWriter, r *http.Request) error {
 			return bad("IP HTTP 需明确添加 --allow-http")
 		}
 	}
-	_, secret, e := a.settings(r.Context())
+	settings, secret, e := a.settings(r.Context())
 	if e != nil {
 		return e
 	}
@@ -66,8 +66,12 @@ func (a *App) localDomain(w http.ResponseWriter, r *http.Request) error {
 	if secret.Alipay != nil && secret.Alipay.Enabled && !strings.HasPrefix(origin, "https://") {
 		return Problem{409, "已启用官方支付宝回调，请先在后台停用该支付渠道，再切换到 HTTP IP 入口"}
 	}
-	if _, e = tx.Exec(r.Context(), "UPDATE settings SET public=public||$1::jsonb,version=version+1 WHERE id=true", raw(map[string]any{"domain": b.Domain, "https": b.HTTPS && b.Domain != "", "public_origin": origin})); e != nil {
+	tag, e := tx.Exec(r.Context(), "UPDATE settings SET public=public||$1::jsonb,version=version+1 WHERE id=true AND version=$2", raw(map[string]any{"domain": b.Domain, "https": b.HTTPS && b.Domain != "", "public_origin": origin}), settings.Version)
+	if e != nil {
 		return e
+	}
+	if tag.RowsAffected() != 1 {
+		return Problem{409, "设置在操作期间已变更，请检查支付与域名配置后重试"}
 	}
 	sealed, e := a.seal(map[string]any{"domain": b.Domain, "https": b.HTTPS, "origin": origin})
 	if e != nil {
