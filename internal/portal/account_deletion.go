@@ -89,7 +89,13 @@ func (a *App) deleteAccount(w http.ResponseWriter, r *http.Request) error {
 			return e
 		}
 	}
-	if !admin {
+	needsAccess := !admin
+	if admin {
+		if e = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM service_accounts WHERE customer_id=$1) OR EXISTS(SELECT 1 FROM orders WHERE customer_id=$1 AND state='paid')", b.ID).Scan(&needsAccess); e != nil {
+			return e
+		}
+	}
+	if needsAccess {
 		if _, e = tx.Exec(ctx, `INSERT INTO jobs(id,kind,subject) VALUES($1,'access',$2) ON CONFLICT(kind,subject) DO UPDATE SET state='queued',attempts=0,available_at=now(),detail='',updated_at=now()`, ID(), b.ID); e != nil {
 			return e
 		}
@@ -102,7 +108,7 @@ func (a *App) deleteAccount(w http.ResponseWriter, r *http.Request) error {
 	}
 	message := "账户已删除并注销登录；代理撤权已排队，订单核账记录保留，可在已删除列表恢复"
 	if admin {
-		message = "副管理员已删除并注销登录，相关机器人核款权限立即失效"
+		message = "副管理员已删除并注销登录，相关机器人核款权限立即失效；如有订阅，撤权任务已排队"
 	}
 	if restore {
 		message = "账户已恢复为停用状态，请核对权限后手动启用"

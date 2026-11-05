@@ -119,9 +119,9 @@ func (a *App) team(w http.ResponseWriter, r *http.Request) error {
 		_, e = tx.Exec(ctx, `INSERT INTO customers(id,email,name,password_hash,role,status,email_verified_at,admin_scopes) VALUES($1,$2,$3,$4,'admin',$5,now(),$6)`, id, email, b.Name, encoded, status, raw(b.Scopes))
 	} else {
 		var owner bool
-		var oldEmail string
+		var oldEmail, oldStatus string
 		var version int
-		if e = tx.QueryRow(ctx, "SELECT is_owner,email,admin_version FROM customers WHERE id=$1 AND role='admin' AND deleted_at IS NULL FOR UPDATE", id).Scan(&owner, &oldEmail, &version); e != nil {
+		if e = tx.QueryRow(ctx, "SELECT is_owner,email,admin_version,status FROM customers WHERE id=$1 AND role='admin' AND deleted_at IS NULL FOR UPDATE", id).Scan(&owner, &oldEmail, &version, &oldStatus); e != nil {
 			return e
 		}
 		if owner {
@@ -134,6 +134,9 @@ func (a *App) team(w http.ResponseWriter, r *http.Request) error {
 			return bad("副管理员邮箱变更需由本人验证新邮箱")
 		}
 		_, e = tx.Exec(ctx, `UPDATE customers SET name=$2,status=$3,admin_scopes=$4,password_hash=CASE WHEN $5='' THEN password_hash ELSE $5 END,admin_version=admin_version+1 WHERE id=$1`, id, b.Name, status, raw(b.Scopes), encoded)
+		if e == nil && oldStatus != status {
+			_, e = tx.Exec(ctx, `INSERT INTO jobs(id,kind,subject) SELECT $1,'access',$2 WHERE EXISTS(SELECT 1 FROM service_accounts WHERE customer_id=$2) OR EXISTS(SELECT 1 FROM orders WHERE customer_id=$2 AND state='paid') ON CONFLICT(kind,subject) DO UPDATE SET state='queued',attempts=0,available_at=now(),detail='',updated_at=now()`, ID(), id)
+		}
 		if e == nil {
 			_, e = tx.Exec(ctx, "DELETE FROM sessions WHERE customer_id=$1", id)
 		}

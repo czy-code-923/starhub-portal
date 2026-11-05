@@ -74,7 +74,7 @@ func (a *App) WorkOnce(ctx context.Context) error {
 			continue
 		}
 		if kind == "fulfill" && state == "failed" {
-			_, _ = a.DB.Exec(ctx, "UPDATE orders SET fulfillment='failed' WHERE id=$1 AND state='paid'", subject)
+			_, _ = a.DB.Exec(ctx, "UPDATE orders SET fulfillment='failed' WHERE id=$1 AND state='paid' AND fulfillment<>'active'", subject)
 		}
 	}
 	return nil
@@ -213,7 +213,7 @@ func (a *App) fulfill(ctx context.Context, order string) error {
 func (a *App) syncAccess(ctx context.Context, user string) error {
 	for pass := 0; pass < 3; pass++ {
 		var status string
-		if e := a.DB.QueryRow(ctx, "SELECT status FROM customers WHERE id=$1 AND role='customer'", user).Scan(&status); e != nil {
+		if e := a.DB.QueryRow(ctx, "SELECT status FROM customers WHERE id=$1", user).Scan(&status); e != nil {
 			return e
 		}
 		// External ID remains authoritative if a grant succeeded remotely but its
