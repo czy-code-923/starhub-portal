@@ -64,6 +64,23 @@ func setup(t *testing.T) *fixture {
 			t.Error("missing restricted core key")
 		}
 		switch {
+		case r.URL.Path == "/api/v1/proxy-users/page":
+			items := []map[string]any{}
+			rows, e := a.DB.Query(r.Context(), "SELECT control_user_id FROM service_accounts ORDER BY control_user_id")
+			if e != nil {
+				t.Error(e)
+				send(w, 500, nil)
+				return
+			}
+			for rows.Next() {
+				var id string
+				_ = rows.Scan(&id)
+				items = append(items, map[string]any{"id": id, "enabled": true, "active": true, "expires_at": time.Now().Add(24 * time.Hour), "quota_bytes": int64(100000000000), "used_bytes": 0})
+			}
+			rows.Close()
+			send(w, 200, map[string]any{"items": items, "next_cursor": ""})
+		case strings.HasPrefix(r.URL.Path, "/api/v1/proxy-users/") && !strings.HasSuffix(r.URL.Path, "/devices"):
+			send(w, 200, map[string]any{"enabled": true, "active": true, "expires_at": time.Now().Add(24 * time.Hour), "quota_bytes": int64(100000000000), "used_bytes": 0})
 		case r.URL.Path == "/api/v1/commerce/capacity":
 			send(w, 200, map[string]int{"remaining_identities": 400, "identity_limit": 500, "identities": 100})
 		case r.URL.Path == "/api/v1/commerce/validate":
@@ -385,8 +402,7 @@ func TestPasswordResetRevokesSessionsAndUniqueKeys(t *testing.T) {
 	if bytes.Contains(b, []byte("not-plaintext")) {
 		t.Fatal("secret unencrypted")
 	}
-	other := *f.a
-	other.Key = bytes.Repeat([]byte{39}, 32)
+	other := &App{Key: bytes.Repeat([]byte{39}, 32)}
 	if e := other.unseal(b, &map[string]string{}); e == nil {
 		t.Fatal("another installation decrypted secrets")
 	}

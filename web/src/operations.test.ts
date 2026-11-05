@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import {mount,flushPromises} from '@vue/test-utils';import {describe,it,expect,vi} from 'vitest';
-import ClientHelp from './ClientHelp.vue';import TelegramPanel from './TelegramPanel.vue';import AccountDeletion from './AccountDeletion.vue';import PlanCatalog from './PlanCatalog.vue';
+import OperationalHistory from './OperationalHistory.vue';import ClientHelp from './ClientHelp.vue';import TelegramPanel from './TelegramPanel.vue';import AccountDeletion from './AccountDeletion.vue';import PlanCatalog from './PlanCatalog.vue';
 describe('editable customer help',()=>{
  it('loads persisted help, edits steps and sends an optimistic version',async()=>{
   const document={title:'平台教程',intro:'说明',apps:[{id:'one',name:'Example',format:'Mihomo',platforms:['Android'],url:'https://example.test',steps:['原始步骤']}],faqs:[]};
@@ -29,5 +29,11 @@ describe('consistent plan catalog',()=>{
  it('uses the same card structure across categories and preserves checkout identity',async()=>{
   const plan=(id:string,c:string,recommended:boolean)=>({id,category_id:c,name:id,description:'说明',prices:[{amount:1000,months:1}],quota_bytes:20*1024**3,quota_unit:'GiB',protocols:['hysteria2'],max_devices:2,display_features:[],recommended});
   const w=mount(PlanCatalog,{props:{admin:false,catalog:{categories:[{id:'light',name:'轻享'},{id:'daily',name:'日常畅连'}],plans:[plan('one','light',false),plan('two','daily',true)]}}});const cards=w.findAll('.catalog-plan');expect(cards).toHaveLength(2);expect(cards.every(c=>c.find('.catalog-facts').exists()&&c.find('.plan-labels').exists())).toBe(true);expect(w.find('.featured').exists()).toBe(false);await cards[1]!.find('button').trigger('click');expect(w.emitted('choose')?.[0]?.[0]).toMatchObject({id:'two'});w.unmount();
+ });
+});
+
+describe('bounded operational history',()=>{
+ it('requires confirmation before clearing completed history',async()=>{
+  const request=vi.fn(async(path:string,_m?:string,_b?:unknown)=>path.startsWith('admin/record-retention')?{can_clear:true,completed_jobs:4,protected_jobs:2}:[]);const w=mount(OperationalHistory,{props:{request,kind:'jobs'}});await flushPromises();await w.findAll('button').find(b=>b.text()==='清理已完成任务')!.trigger('click');await w.find('form').trigger('submit');expect(request.mock.calls.some(c=>c[1]==='POST')).toBe(false);await w.find('input[type="checkbox"]').setValue(true);await w.find('form').trigger('submit');await flushPromises();expect(request).toHaveBeenCalledWith('admin/record-retention?kind=jobs','POST',{confirmed:true});w.unmount();
  });
 });

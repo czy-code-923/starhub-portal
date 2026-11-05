@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -27,7 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const Version = "0.5.1"
+const Version = "0.6.0"
 const Repository = "czy-code-923/starhub-portal"
 
 //go:embed migrations/*.sql
@@ -45,6 +46,10 @@ type App struct {
 	Now             func() time.Time
 	TestControlURL  string
 	TestTelegramURL string
+	healthMu        sync.Mutex
+	nextHealthSync  time.Time
+	retentionMu     sync.Mutex
+	nextRetention   time.Time
 }
 type Problem struct {
 	Status  int
@@ -358,6 +363,8 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("POST /portal/v1/payments/alipay/notify", wrap(a.alipayNotify))
 	m.HandleFunc("GET /portal/v1/me/service", a.auth(a.service, false))
 	m.HandleFunc("GET /portal/v1/me/services", a.auth(a.services, false))
+	m.HandleFunc("GET /portal/v1/admin/record-retention", a.auth(a.recordRetention, true))
+	m.HandleFunc("POST /portal/v1/admin/record-retention", a.auth(a.recordRetention, true))
 	m.HandleFunc("GET /portal/v1/me/subscription/{view}", a.auth(a.subscription, false))
 	m.HandleFunc("GET /portal/v1/me/devices", a.auth(a.devices, false))
 	m.HandleFunc("GET /portal/v1/clients", a.auth(a.clients, false))

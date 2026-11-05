@@ -65,6 +65,11 @@ func (a *App) controlRequest(ctx context.Context, method, path string, body any)
 			message = "请求未完成"
 		}
 		if res.StatusCode == 404 {
+			base := strings.Split(path, "?")[0]
+			parts := strings.Split(base, "/")
+			if len(parts) >= 2 && (parts[0] == "proxy-users" || parts[0] == "subscriptions") && portalID.MatchString(parts[1]) {
+				return nil, Problem{404, "星枢中的身份或订阅已删除"}
+			}
 			if strings.HasPrefix(path, "commerce/accounts/") {
 				return nil, Problem{404, "商业账户尚未创建"}
 			}
@@ -112,7 +117,6 @@ func (a *App) account(ctx context.Context, user string) (string, string, error) 
 }
 func (a *App) service(w http.ResponseWriter, r *http.Request) error {
 	selected, e := a.selectedService(r)
-	id := selected.User
 	if e == pgx.ErrNoRows {
 		send(w, 200, map[string]any{"service": nil})
 		return nil
@@ -120,14 +124,11 @@ func (a *App) service(w http.ResponseWriter, r *http.Request) error {
 	if e != nil {
 		return e
 	}
-	var u map[string]any
-	if e = a.control(r.Context(), "GET", "proxy-users/"+id, nil, &u); e != nil {
+	u, e := a.liveService(r.Context(), selected)
+	if e != nil {
 		return e
 	}
-	safe := map[string]any{}
-	for _, field := range []string{"active", "enabled", "expires_at", "quota_bytes", "used_bytes", "remaining_bytes", "lifetime_bytes", "upload_bytes", "download_bytes", "next_reset_at", "reset_day", "reset_strategy", "billing_mode", "multiplier_milli", "effective_max_devices", "device_count", "metered_nodes"} {
-		safe[field] = u[field]
-	}
+	safe := u
 	var name string
 	_ = a.DB.QueryRow(r.Context(), "SELECT snapshot->'plan'->>'name' FROM orders WHERE id=$1", selected.Order).Scan(&name)
 	safe["plan_name"] = name
@@ -155,13 +156,25 @@ func (a *App) subscription(w http.ResponseWriter, r *http.Request) error {
 		return e
 	}
 	view := r.PathValue("view")
-	if !includes([]string{"share", "qr", "content", "nodes", "check"}, view) {
+	if view == "content" {
+		return Problem{410, "配置下载已关闭，请在此订单下选择客户端并导入订阅链接"}
+	}
+	if !includes([]string{"share", "qr", "nodes", "check"}, view) {
 		return bad("不支持的订阅操作")
 	}
-	client := r.URL.Query().Get("client")
-	if view == "content" && (client == "" || client == "auto") {
-		client = "mihomo"
+	u, e := a.liveService(r.Context(), selected)
+	if e != nil {
+		return e
 	}
+	state, _ := u["state"].(string)
+	if inactiveService(state) {
+		if view == "check" {
+			send(w, 200, map[string]any{"ready": false, "state": state, "reason": "此订单服务已失效，请联系管理员"})
+			return nil
+		}
+		return serviceUnavailable(state)
+	}
+	client := r.URL.Query().Get("client")
 	if len(client) > 40 || strings.ContainsAny(client, "/\\\r\n&?#") {
 		return bad("客户端参数无效")
 	}
@@ -171,6 +184,11 @@ func (a *App) subscription(w http.ResponseWriter, r *http.Request) error {
 	}
 	res, e := a.controlRequest(r.Context(), "GET", path, nil)
 	if e != nil {
+		var p Problem
+		if errors.As(e, &p) && p.Status == 404 {
+			_ = a.saveServiceHealth(r.Context(), selected.User, "invalid", u, a.now())
+			return serviceUnavailable("invalid")
+		}
 		return e
 	}
 	defer res.Body.Close()
@@ -182,16 +200,6 @@ func (a *App) subscription(w http.ResponseWriter, r *http.Request) error {
 		if v := res.Header.Get(h); v != "" {
 			w.Header().Set(h, v)
 		}
-	}
-	if view == "content" {
-		ext := "txt"
-		if strings.Contains(client, "sing-box") || client == "hiddify" || client == "hiddify-app" {
-			ext = "json"
-		}
-		if client == "mihomo" || client == "clash" {
-			ext = "yaml"
-		}
-		w.Header().Set("Content-Disposition", `attachment; filename="starhub-`+selected.Order+`.`+ext+`"`)
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(200)
@@ -207,6 +215,15 @@ func (a *App) devices(w http.ResponseWriter, r *http.Request) error {
 	}
 	if e != nil {
 		return e
+	}
+	u, e := a.liveService(r.Context(), selected)
+	if e != nil {
+		return e
+	}
+	state, _ := u["state"].(string)
+	if inactiveService(state) {
+		send(w, 200, []any{})
+		return nil
 	}
 	var list any
 	if e = a.control(r.Context(), "GET", "proxy-users/"+id+"/devices", nil, &list); e != nil {

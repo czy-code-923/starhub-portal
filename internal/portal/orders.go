@@ -286,7 +286,8 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 func (a *App) orders(w http.ResponseWriter, r *http.Request) error {
-	data, e := jsonRows(r.Context(), a.DB, `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,plan_id,price_id,EXISTS(SELECT 1 FROM service_accounts s WHERE s.order_id=o.id) has_subscription,(SELECT state FROM manual_payments m WHERE m.order_id=o.id) manual_state,snapshot->'plan'->>'name' plan_name,base_amount,discount_amount,payable,state,fulfillment,expires_at,paid_at,created_at FROM orders o WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 100)x`, current(r).ID)
+	_ = a.refreshServiceStates(r.Context())
+	data, e := jsonRows(r.Context(), a.DB, `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,plan_id,price_id,(SELECT s.remote_state FROM service_accounts s WHERE s.order_id=o.id) service_state,(SELECT s.remote_checked_at FROM service_accounts s WHERE s.order_id=o.id) service_checked_at,EXISTS(SELECT 1 FROM service_accounts s WHERE s.order_id=o.id) has_subscription,(SELECT state FROM manual_payments m WHERE m.order_id=o.id) manual_state,snapshot->'plan'->>'name' plan_name,base_amount,discount_amount,payable,state,fulfillment,expires_at,paid_at,created_at FROM orders o WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 100)x`, current(r).ID)
 	if e != nil {
 		return e
 	}

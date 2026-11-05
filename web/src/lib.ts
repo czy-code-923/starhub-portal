@@ -6,5 +6,5 @@ export function traffic(bytes: unknown, unit='GB') {
 }
 export const money=(n:unknown)=>'¥'+((Number(n)||0)/100).toFixed(2);
 export const date=(v:unknown)=>v?new Date(String(v)).toLocaleString('zh-CN',{hour12:false}):'—';
-export const states:Record<string,string>={awaiting:'待付款',submitted:'待人工核款',approved:'已核实到账',rejected:'已驳回',pending:'待处理',paid:'已支付',cancelled:'已取消',late_paid:'超时付款 · 待人工处理',refund_pending:'待退款',refunded:'已退款',active:'已生效',none:'未开通',queued:'排队中',working:'处理中',failed:'失败',succeeded:'已完成',rolled_back:'已回滚',unverified:'待验证邮箱',disabled:'已停用',expired:'已过期',open:'进行中',closed:'已关闭'};
+export const states:Record<string,string>={unknown:'待同步',deleted:'已删除',invalid:'已失效',exhausted:'额度耗尽',awaiting:'待付款',submitted:'待人工核款',approved:'已核实到账',rejected:'已驳回',pending:'待处理',paid:'已支付',cancelled:'已取消',late_paid:'超时付款 · 待人工处理',refund_pending:'待退款',refunded:'已退款',active:'已生效',none:'未开通',queued:'排队中',working:'处理中',failed:'失败',succeeded:'已完成',rolled_back:'已回滚',unverified:'待验证邮箱',disabled:'已停用',expired:'已过期',open:'进行中',closed:'已关闭'};
 export function buyKey(){return globalThis.crypto?.randomUUID?.()||Array.from(globalThis.crypto.getRandomValues(new Uint8Array(20)),v=>v.toString(16).padStart(2,'0')).join('');}

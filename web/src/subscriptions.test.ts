@@ -3,21 +3,26 @@ import {mount,flushPromises} from '@vue/test-utils';import {afterEach,describe,e
 import SubscriptionsPanel from './SubscriptionsPanel.vue';import App from './App.vue';
 afterEach(()=>{vi.unstubAllGlobals();vi.restoreAllMocks()});
 describe('per-order subscriptions',()=>{
- it('opens the requested older order outside the first page and downloads its actual config',async()=>{
+ it('opens an older order and exposes independent links for each format without file downloads',async()=>{
   const id='b'.repeat(32),first='a'.repeat(32);const request=vi.fn(async(path:string)=>{
    if(path.startsWith('me/services'))return{items:[{id:first,plan_name:'First page',quota_unit:'GiB'}],total:26};
-   if(path==='clients')return[{id:'mihomo',name:'Mihomo'}];if(path.startsWith('me/service?'))return{service:{plan_name:'Older order',order_id:id,quota_unit:'GiB',quota_bytes:20*1024**3}};
-   if(path.startsWith('me/devices'))return[];if(path.includes('/check'))return{ready:true};return{url:'https://example.test/own-subscription'};
+   if(path==='clients')return[{id:'mihomo',name:'Mihomo'},{id:'sing-box',name:'sing-box'}];if(path.startsWith('me/service?'))return{service:{state:'active',plan_name:'Older order',order_id:id,quota_unit:'GiB',quota_bytes:20*1024**3}};
+   if(path.startsWith('me/devices'))return[];if(path.includes('/check'))return{ready:true};return{url:'https://example.test/'+new URLSearchParams(path.split('?')[1]).get('client')};
   });
-  const download=vi.fn().mockResolvedValue(new Response('proxies: []\n',{headers:{'Content-Disposition':'attachment; filename="starhub-'+id+'.yaml"'}}));vi.stubGlobal('fetch',download);
-  vi.spyOn(URL,'createObjectURL').mockReturnValue('blob:fixture');vi.spyOn(URL,'revokeObjectURL').mockImplementation(()=>{});const click=vi.spyOn(HTMLAnchorElement.prototype,'click').mockImplementation(()=>{});
-  const w=mount(SubscriptionsPanel,{props:{request,initial:id}});await flushPromises();expect(w.text()).toContain('Older order');expect(request).toHaveBeenCalledWith('me/subscription/share?service='+id+'&client=auto');
-  await w.findAll('button').find(b=>b.text().includes('下载'))!.trigger('click');await flushPromises();expect(download).toHaveBeenCalledWith('/portal/v1/me/subscription/content?service='+id+'&client=mihomo',expect.objectContaining({credentials:'same-origin'}));expect(click).toHaveBeenCalledOnce();w.unmount();
+  const fetcher=vi.fn();vi.stubGlobal('fetch',fetcher);const w=mount(SubscriptionsPanel,{props:{request,initial:id}});await flushPromises();expect(w.text()).toContain('Older order');
+  await w.find('[data-client="mihomo"] button').trigger('click');await flushPromises();expect(request).toHaveBeenCalledWith('me/subscription/share?service='+id+'&client=mihomo');expect(w.find('[aria-label="Mihomo 订阅链接"]').element).toHaveProperty('value','https://example.test/mihomo');
+  await w.find('[data-client="sing-box"] button').trigger('click');await flushPromises();expect(request).toHaveBeenCalledWith('me/subscription/share?service='+id+'&client=sing-box');expect(w.find('[aria-label="sing-box 订阅链接"]').element).toHaveProperty('value','https://example.test/sing-box');
+  expect(w.findAll('button').some(b=>b.text().includes('下载'))).toBe(false);expect(fetcher).not.toHaveBeenCalled();w.unmount();
  });
- it('shows HTTP download failures instead of saving an error document',async()=>{
-  const id='a'.repeat(32),request=vi.fn(async(path:string)=>path.startsWith('me/services')?{items:[{id,plan_name:'Example'}],total:1}:path==='clients'?[]:path.startsWith('me/service?')?{service:{plan_name:'Example'}}:path.startsWith('me/devices')?[]:path.includes('/check')?{ready:true}:{url:'https://example.test/sub'});
-  vi.stubGlobal('fetch',vi.fn().mockResolvedValue(new Response(JSON.stringify({error:'节点同步中'}),{status:503})));const click=vi.spyOn(HTMLAnchorElement.prototype,'click').mockImplementation(()=>{});
-  const w=mount(SubscriptionsPanel,{props:{request}});await flushPromises();await w.findAll('button').find(b=>b.text().includes('下载'))!.trigger('click');await flushPromises();expect(w.text()).toContain('节点同步中');expect(click).not.toHaveBeenCalled();w.unmount();
+ it('shows deleted services without exposing or requesting import links',async()=>{
+  const id='a'.repeat(32),request=vi.fn(async(path:string)=>path.startsWith('me/services')?{items:[{id,plan_name:'Example',service_state:'deleted'}],total:1}:path==='clients'?[{id:'mihomo',name:'Mihomo'}]:path.startsWith('me/service?')?{service:{state:'deleted',plan_name:'Example'}}:[]);
+  const w=mount(SubscriptionsPanel,{props:{request}});await flushPromises();expect(w.text()).toContain('已删除');expect(w.find('.client-grid').exists()).toBe(false);expect(request.mock.calls.some(c=>c[0].includes('/share')||c[0].includes('/devices'))).toBe(false);w.unmount();
+ });
+ it('clears previous links when switching orders and excludes incompatible formats',async()=>{
+  const a='a'.repeat(32),b='b'.repeat(32),request=vi.fn(async(path:string)=>path.startsWith('me/services')?{items:[{id:a,plan_name:'First'},{id:b,plan_name:'Second'}],total:2}:path==='clients'?[{id:'mihomo',name:'Mihomo'},{id:'other',name:'Unsupported'}]:path.startsWith('me/service?')?{service:{state:'active'}}:path.startsWith('me/devices')?[]:path.includes('/check')?{ready:!path.endsWith('other'),reason:'不支持此协议'}:{url:'https://example.test/'+(path.includes(a)?a:b)});
+  const w=mount(SubscriptionsPanel,{props:{request}});await flushPromises();await w.find('[data-client="mihomo"] button').trigger('click');await flushPromises();expect(w.find('[aria-label="Mihomo 订阅链接"]').element).toHaveProperty('value','https://example.test/'+a);
+  await w.findAll('.service-open')[1]!.trigger('click');await flushPromises();expect(w.find('[aria-label="Mihomo 订阅链接"]').exists()).toBe(false);await w.find('[data-client="mihomo"] button').trigger('click');await flushPromises();expect(w.find('[aria-label="Mihomo 订阅链接"]').element).toHaveProperty('value','https://example.test/'+b);
+  await w.find('[data-client="other"] button').trigger('click');await flushPromises();expect(w.text()).toContain('不支持此协议');expect(request).not.toHaveBeenCalledWith('me/subscription/share?service='+b+'&client=other');w.unmount();
  });
 });
 describe('customer presentation',()=>{

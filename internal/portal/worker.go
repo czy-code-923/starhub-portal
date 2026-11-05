@@ -21,6 +21,8 @@ func (a *App) Run(ctx context.Context) {
 	defer timer.Stop()
 	for {
 		_ = a.WorkOnce(ctx)
+		_ = a.pruneHistory(ctx, false, "")
+		_ = a.refreshServiceStates(ctx)
 		select {
 		case <-ctx.Done():
 			return

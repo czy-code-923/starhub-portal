@@ -35,7 +35,7 @@
 
 主管理员 `GET/PUT /admin/telegram`（写入需 version，空 token 保留，clear_token 删除并停用）；`POST /admin/telegram/{check|commands|retry}`。授权对象为 principals 数组，含 user_id、label、scopes、notify；scope 为 overview/orders/payments/redpacket，redpacket 同时需要 payments。配置响应永不返回 Token。`check` 仅验证接入、不发送测试消息；`commands` 仅独立命令模式可用，并拒绝已有 Webhook。`POST /admin/gateway/retry` 重新应用当前域名设置，存在排队任务时返回 409。
 
-0.4.0：新增 `GET /me/services?offset=0`，返回 items、total、offset、limit（25）。`/me/service`、`/me/subscription/{view}`、`/me/devices` 通过 `?service=<order_id>` 选择自己的订单，省略则为最近服务；不能读取其他用户订单。下载 content 的 auto 格式默认 Mihomo，并返回附件文件名。主管理员 `GET /admin/capacity` 查询实际身份余量，`GET /admin/service-migrations` 查询脱敏迁移结果和服务映射，不返回订阅密钥或迁移密文。
+0.4.0：新增 `GET /me/services?offset=0`，返回 items、total、offset、limit（25）。`/me/service`、`/me/subscription/{view}`、`/me/devices` 通过 `?service=<order_id>` 选择自己的订单，省略则为最近服务；不能读取其他用户订单。0.6.0 起 content 配置下载关闭并返回 410，改用 share / qr。主管理员 `GET /admin/capacity` 查询实际身份余量，`GET /admin/service-migrations` 查询脱敏迁移结果和服务映射，不返回订阅密钥或迁移密文。
 
 套餐 `display_features=[{"label":"峰值速率","value":"500 Mbps"}]` 最多 12 条，每条名称 24 字、内容 160 字；Vue 以纯文本显示。公告 `pinned` 布尔值、`pin_order` 整数（±100000），支持多条置顶，查询顺序为 pinned 降序、pin_order 升序、created_at 降序。隐藏/取消置顶均用原 POST/PUT 接口。
 
@@ -46,3 +46,10 @@
 `DELETE /admin/administrators` 仅主管理员；`DELETE /admin/customers` 需 customers + delete_customers 权限。请求 `{id,version,confirmed:true}`，version 来自列表的 admin_version。删除使账户停用并移出列表，登录与邮箱令牌作废；购买用户的代理撤权排队同步，核账记录保留。`GET /admin/{customers|administrators}?deleted=1` 查询已删除账户；`POST /admin/{customers|administrators}/restore` 使用同样请求体恢复为停用（未验证用户重新验证邮箱），不自动启用代理。主管理员与当前操作人不可删除。
 
 Telegram approve 现在同时支持口令红包与 alipay_static / wechat_static。approve 需 payments 和 administrator_id，只有红包再额外要求 redpacket。静态码核验按钮发出 ForceReply，授权私聊用户回复“真实流水号 金额 YYYY-MM-DD HH:MM”（北京时间），验证金额和付款时间窗口后生成二次确认按钮；首次有效填写后不可覆盖。仅 notify_only 模式不消费按钮或回复；审批必须选择 polling 专用机器人。截图、口令或填写流水都不会直接开通，最终确认仍使用后台相同的事务审核、流水去重和幂等开通任务。
+
+
+0.6.0：`GET /me/services`、`GET /orders`、`GET /admin/orders` 附带 `service_state`，可能为 unknown / active / disabled / expired / exhausted / deleted / invalid；`remote_checked_at`（订单列表为 service_checked_at）表示最近成功核验时间。`GET /me/service?service=<order>` 的 service.state 为实时身份状态，删除也返回 200 的状态对象。失效时 share / qr / nodes 返回 410，check 返回 ready=false；content 始终返回 410。404 仍用于不存在或不属于当前用户的订单。断网、鉴权失败、响应格式不完整返回 503 或保留上次成功状态，不标记删除，不重新开通。
+
+`GET /admin/capacity` 分别返回核心真实 identities / identity_limit（仍用于容量准入）、paid_orders（核验通过的历史订单）、portal_services（当前有效订阅）、invalid_services、unchecked_services、registered_customers 和 services_checked_at。非已付款订单不计入服务统计。后台快照间隔 60 秒，数据库仅缓存明确的计量字段，不缓存代理凭据。
+
+`GET /admin/record-retention?kind=jobs|audit` 需对应 jobs/audit 权限，返回固定保留策略、条数和 can_clear。`POST` 同路径仅主管理员可执行，需 CSRF 和 `{confirmed:true}`；audit 清空后留下此次清理标记，jobs 仅删除 succeeded / rolled_back。工作中和待重试任务、财务与幂等凭据不可通过此接口删除。

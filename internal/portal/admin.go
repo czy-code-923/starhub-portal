@@ -59,10 +59,23 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 		if e != nil {
 			return e
 		}
-		var registered, services int
-		_ = a.DB.QueryRow(r.Context(), "SELECT (SELECT count(*) FROM customers WHERE role='customer' AND deleted_at IS NULL),(SELECT count(*) FROM service_accounts)").Scan(&registered, &services)
+		syncErr := a.refreshServiceStates(r.Context())
+		var registered, services, invalid, unknown, paid int
+		var checked any
+		e = a.DB.QueryRow(r.Context(), `SELECT (SELECT count(*) FROM customers WHERE role='customer' AND deleted_at IS NULL),count(*) FILTER(WHERE s.remote_state='active' AND c.status='active' AND c.deleted_at IS NULL),count(*) FILTER(WHERE s.remote_state IN ('deleted','invalid','expired','disabled','exhausted') OR c.status<>'active' OR c.deleted_at IS NOT NULL),count(*) FILTER(WHERE s.remote_state='unknown'),(SELECT count(*) FROM orders WHERE state='paid'),min(s.remote_checked_at) FROM service_accounts s JOIN orders o ON o.id=s.order_id JOIN customers c ON c.id=s.customer_id WHERE o.state='paid'`).Scan(&registered, &services, &invalid, &unknown, &paid, &checked)
+		if e != nil {
+			return e
+		}
 		result["registered_customers"] = registered
 		result["portal_services"] = services
+		result["invalid_services"] = invalid
+		result["unchecked_services"] = unknown
+		result["paid_orders"] = paid
+		result["services_checked_at"] = checked
+		if syncErr != nil {
+			result["sync_warning"] = "星枢状态暂时未能同步，以下为最近一次验证结果"
+		}
+
 		send(w, 200, result)
 		return nil
 	}
@@ -78,13 +91,16 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 		return nil
 	}
 	if r.Method == "GET" {
+		if kind == "orders" {
+			_ = a.refreshServiceStates(r.Context())
+		}
 		queries := map[string]string{
 			"categories":    `SELECT COALESCE(jsonb_agg(c ORDER BY c.sort,c.name),'[]') FROM categories c`,
 			"plans":         `SELECT COALESCE(jsonb_agg(p ORDER BY p.sort,p.name),'[]') FROM plans p`,
 			"coupons":       `SELECT COALESCE(jsonb_agg(c),'[]') FROM coupons c`,
 			"invitations":   `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,prefix,email,enabled,starts_at,ends_at,max_uses,claimed,created_at FROM invitations ORDER BY created_at DESC LIMIT 200)x`,
 			"customers":     `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,email,name,role,status,created_at,email_verified_at FROM customers WHERE role='customer' ORDER BY created_at DESC LIMIT 500)x`,
-			"orders":        `SELECT COALESCE(jsonb_agg(to_jsonb(x)-'fulfillment_payload'),'[]') FROM(SELECT o.*,(SELECT m.state FROM manual_payments m WHERE m.order_id=o.id) manual_state,c.email FROM orders o JOIN customers c ON c.id=o.customer_id ORDER BY o.created_at DESC LIMIT 300)x`,
+			"orders":        `SELECT COALESCE(jsonb_agg(to_jsonb(x)-'fulfillment_payload'),'[]') FROM(SELECT o.*,(SELECT s.remote_state FROM service_accounts s WHERE s.order_id=o.id) service_state,(SELECT s.remote_checked_at FROM service_accounts s WHERE s.order_id=o.id) service_checked_at,(SELECT m.state FROM manual_payments m WHERE m.order_id=o.id) manual_state,c.email FROM orders o JOIN customers c ON c.id=o.customer_id ORDER BY o.created_at DESC LIMIT 300)x`,
 			"jobs":          `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,kind,subject,state,attempts,available_at,detail,updated_at FROM jobs ORDER BY created_at DESC LIMIT 200)x`,
 			"announcements": `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT * FROM announcements ORDER BY pinned DESC,pin_order,created_at DESC,id LIMIT 100)x`,
 			"tickets":       `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT t.*,c.email FROM tickets t JOIN customers c ON c.id=t.customer_id ORDER BY t.created_at DESC LIMIT 200)x`,

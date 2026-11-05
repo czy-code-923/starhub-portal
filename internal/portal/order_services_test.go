@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func TestOrdersHaveSeparateSubscriptionsAndDownloadsEnforceOwnership(t *testing.T) {
+func TestOrdersHaveSeparateSubscriptionsAndNoConfigDownload(t *testing.T) {
 	f := setup(t)
 	plan := f.plan()
 	ctx := context.Background()
@@ -52,22 +52,8 @@ func TestOrdersHaveSeparateSubscriptionsAndDownloadsEnforceOwnership(t *testing.
 	for _, view := range []string{"service", "subscription/share", "subscription/content", "subscription/qr", "devices"} {
 		expect(t, f.req("GET", "me/"+view+"?service="+ids[0], nil, &f.other, true), 404)
 	}
-	var sub string
-	f.a.DB.QueryRow(ctx, "SELECT subscription_id FROM service_accounts WHERE order_id=$1", ids[0]).Scan(&sub)
-	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/subscriptions/"+sub+"/content" || r.URL.Query().Get("client") != "mihomo" {
-			t.Error("wrong order/client", r.URL.String())
-		}
-		w.Header().Set("Content-Type", "text/yaml")
-		w.Write([]byte("proxies: []\n"))
-	}))
-	defer mock.Close()
-	f.a.TestControlURL = mock.URL
-	w = f.req("GET", "me/subscription/content?service="+ids[0]+"&client=auto", nil, &f.customer, true)
-	expect(t, w, 200)
-	if !strings.Contains(w.Header().Get("Content-Disposition"), ids[0]+".yaml") || w.Body.String() != "proxies: []\n" {
-		t.Fatal("bad download", w.Header(), w.Body.String())
-	}
+	expect(t, f.req("GET", "me/subscription/content?service="+ids[0]+"&client=mihomo", nil, &f.customer, true), 410)
+
 }
 
 func TestLegacyMigrationFreezesRequestAndMapsEveryOrder(t *testing.T) {
