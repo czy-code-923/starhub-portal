@@ -27,7 +27,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const Version = "0.4.1"
+const Version = "0.5.0"
 const Repository = "czy-code-923/starhub-portal"
 
 //go:embed migrations/*.sql
@@ -243,7 +243,7 @@ func (a *App) auth(fn endpoint, admin bool) http.HandlerFunc {
 		}
 		var u actor
 		var csrf string
-		e = a.DB.QueryRow(r.Context(), `SELECT c.id,c.email,c.name,c.role,c.is_owner,c.admin_scopes,s.csrf_hash FROM sessions s JOIN customers c ON c.id=s.customer_id WHERE s.token_hash=$1 AND s.expires_at>$2 AND c.status='active'`, hash(c.Value), a.now()).Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.Owner, &u.Scopes, &csrf)
+		e = a.DB.QueryRow(r.Context(), `SELECT c.id,c.email,c.name,c.role,c.is_owner,c.admin_scopes,s.csrf_hash FROM sessions s JOIN customers c ON c.id=s.customer_id WHERE s.token_hash=$1 AND s.expires_at>$2 AND c.status='active' AND c.deleted_at IS NULL`, hash(c.Value), a.now()).Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.Owner, &u.Scopes, &csrf)
 		if e != nil {
 			return Problem{401, "登录已失效"}
 		}
@@ -317,6 +317,9 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("POST /portal/v1/auth/verify", wrap(a.verify))
 	m.HandleFunc("POST /portal/v1/auth/forgot", wrap(a.forgot))
 	m.HandleFunc("POST /portal/v1/auth/reset", wrap(a.reset))
+	m.HandleFunc("GET /portal/v1/client-help", a.auth(a.clientHelp, false))
+	m.HandleFunc("PUT /portal/v1/admin/client-help", a.auth(a.clientHelp, true))
+	m.HandleFunc("POST /portal/v1/admin/{kind}/restore", a.auth(a.deleteAccount, true))
 	m.HandleFunc("GET /portal/v1/me", a.auth(a.me, false))
 	m.HandleFunc("GET /portal/v1/me/profile", a.auth(a.profile, false))
 	m.HandleFunc("PUT /portal/v1/me/profile", a.auth(a.profile, false))
@@ -327,7 +330,7 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("POST /portal/v1/orders/{id}/receipt", a.auth(a.submitReceipt, false))
 	m.HandleFunc("GET /portal/v1/orders/{id}/payment-code", a.auth(a.manualImage, false))
 	m.HandleFunc("GET /portal/v1/orders/{id}/receipt", a.auth(a.manualImage, false))
-	for _, method := range []string{"GET", "POST", "PUT"} {
+	for _, method := range []string{"GET", "POST", "PUT", "DELETE"} {
 		m.HandleFunc(method+" /portal/v1/admin/administrators", a.auth(a.team, true))
 	}
 	m.HandleFunc("GET /portal/v1/admin/payment-methods", a.auth(a.configurePaymentMethods, true))

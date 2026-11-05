@@ -104,7 +104,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) error {
 	email, _ := emailAddress(b.Email)
 	var u actor
 	var encoded, status string
-	e := a.DB.QueryRow(r.Context(), "SELECT id,email,name,role,is_owner,admin_scopes,password_hash,status FROM customers WHERE email=$1", email).Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.Owner, &u.Scopes, &encoded, &status)
+	e := a.DB.QueryRow(r.Context(), "SELECT id,email,name,role,is_owner,admin_scopes,password_hash,status FROM customers WHERE email=$1 AND deleted_at IS NULL", email).Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.Owner, &u.Scopes, &encoded, &status)
 	if e != nil {
 		_, _ = passwordHash("invalid-login-dummy-credential")
 		return Problem{401, "邮箱或密码不正确"}
@@ -217,7 +217,7 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) error {
 		return e
 	}
 	var count int
-	if e = tx.QueryRow(r.Context(), "SELECT count(*) FROM customers").Scan(&count); e != nil {
+	if e = tx.QueryRow(r.Context(), "SELECT count(*) FROM customers WHERE deleted_at IS NULL").Scan(&count); e != nil {
 		return e
 	}
 	if count >= s.RegistrationLimit {

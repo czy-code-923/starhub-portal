@@ -39,4 +39,10 @@
 
 套餐 `display_features=[{"label":"峰值速率","value":"500 Mbps"}]` 最多 12 条，每条名称 24 字、内容 160 字；Vue 以纯文本显示。公告 `pinned` 布尔值、`pin_order` 整数（±100000），支持多条置顶，查询顺序为 pinned 降序、pin_order 升序、created_at 降序。隐藏/取消置顶均用原 POST/PUT 接口。
 
-Telegram 新增 `approve` 权限，同时需 payments/redpacket 及 `administrator_id`，保存时和每次确认时检查所绑定管理员仍有核款权限。只支持口令红包二次确认批准，不执行实际领取，不自动批准静态码。确认 nonce 绑定机器人 Token、Telegram 数字用户、后台管理员、付款版本，有效 5 分钟、单次使用；权限变化立即生效。
+0.4.0 增加 `approve` 权限和管理员绑定，0.5.0 将其扩展至静态收款码。确认 nonce 绑定机器人 Token、Telegram 数字用户、后台管理员及付款版本，有效 5 分钟、单次使用；权限变化立即生效，实际到账仍由核款人核实。当前权限和使用方法见下文。
+
+0.5.0：`GET /client-help` 返回 `{document,version,platforms}`；`PUT /admin/client-help` 需 `content` 权限，提交 `{document,version}`。文档含 title、intro、apps（id/name/platforms/format/url/steps）、faqs（question/answer）；链接仅 HTTPS，总内容最大 48 KiB。版本不符返回 409。
+
+`DELETE /admin/administrators` 仅主管理员；`DELETE /admin/customers` 需 customers + delete_customers 权限。请求 `{id,version,confirmed:true}`，version 来自列表的 admin_version。删除使账户停用并移出列表，登录与邮箱令牌作废；购买用户的代理撤权排队同步，核账记录保留。`GET /admin/{customers|administrators}?deleted=1` 查询已删除账户；`POST /admin/{customers|administrators}/restore` 使用同样请求体恢复为停用（未验证用户重新验证邮箱），不自动启用代理。主管理员与当前操作人不可删除。
+
+Telegram approve 现在同时支持口令红包与 alipay_static / wechat_static。approve 需 payments 和 administrator_id，只有红包再额外要求 redpacket。静态码核验按钮发出 ForceReply，授权私聊用户回复“真实流水号 金额 YYYY-MM-DD HH:MM”（北京时间），验证金额和付款时间窗口后生成二次确认按钮；首次有效填写后不可覆盖。仅 notify_only 模式不消费按钮或回复；审批必须选择 polling 专用机器人。截图、口令或填写流水都不会直接开通，最终确认仍使用后台相同的事务审核、流水去重和幂等开通任务。

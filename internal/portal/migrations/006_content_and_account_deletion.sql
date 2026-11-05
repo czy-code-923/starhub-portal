@@ -1,0 +1,11 @@
+CREATE TABLE portal_content(name text PRIMARY KEY,version integer NOT NULL DEFAULT 1,document jsonb NOT NULL,updated_at timestamptz NOT NULL DEFAULT now(),updated_by text NOT NULL);
+ALTER TABLE customers ADD COLUMN deleted_at timestamptz;
+ALTER TABLE customers ADD COLUMN deleted_by text;
+CREATE INDEX customers_live_role ON customers(role,created_at DESC) WHERE deleted_at IS NULL;
+ALTER TABLE telegram_confirmations ADD COLUMN method_id text NOT NULL DEFAULT 'alipay_redpacket';
+ALTER TABLE telegram_confirmations ADD COLUMN verified_reference text NOT NULL DEFAULT '';
+ALTER TABLE telegram_confirmations ADD COLUMN received_amount bigint;
+ALTER TABLE telegram_confirmations ADD COLUMN reply_message_id bigint;
+ALTER TABLE telegram_confirmations ADD COLUMN reference_received_at timestamptz;
+CREATE UNIQUE INDEX telegram_payment_reply ON telegram_confirmations(token_hash,user_id,reply_message_id) WHERE reply_message_id IS NOT NULL;
+ALTER TABLE jobs ADD COLUMN lease_generation text;

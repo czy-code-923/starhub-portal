@@ -28,7 +28,7 @@ type tgConfig struct {
 	Principals []tgPrincipal `json:"principals"`
 }
 
-var tgScopes = map[string]string{"overview": "运营概览", "orders": "订单查询 / 新订单通知", "payments": "付款核验查询 / 状态通知", "redpacket": "私聊查看完整红包口令（另需付款权限）", "approve": "核验口令红包并开通（需绑定核款管理员）"}
+var tgScopes = map[string]string{"overview": "运营概览", "orders": "订单查询 / 新订单通知", "payments": "付款核验查询 / 状态通知", "redpacket": "私聊查看完整红包口令（另需付款权限）", "approve": "核验红包 / 收款码并开通（需绑定核款管理员）"}
 var tgToken = regexp.MustCompile(`^[0-9]{5,20}:[A-Za-z0-9_-]{25,100}$`)
 var portalID = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
@@ -71,8 +71,8 @@ func validateTG(c tgConfig) error {
 		if scopes["redpacket"] && !scopes["payments"] {
 			return bad("查看红包口令同时需要付款核验权限")
 		}
-		if scopes["approve"] && (!scopes["payments"] || !scopes["redpacket"] || !portalID.MatchString(p.Administrator)) {
-			return bad("核款权限须同时授权核款、口令查看，并选择一个后台管理员")
+		if scopes["approve"] && (!scopes["payments"] || !portalID.MatchString(p.Administrator)) {
+			return bad("核款开通需要付款权限并选择后台管理员；核验红包另需口令查看权限")
 		}
 	}
 	if c.Enabled && (c.Token == "" || len(c.Principals) == 0) {
@@ -142,7 +142,7 @@ func (a *App) telegramSettings(w http.ResponseWriter, r *http.Request) error {
 	for _, p := range b.Principals {
 		if includes(p.Scopes, "approve") {
 			var allowed bool
-			if e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM customers WHERE id=$1 AND role='admin' AND status='active' AND (is_owner OR admin_scopes ? 'payments'))`, p.Administrator).Scan(&allowed); e != nil {
+			if e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM customers WHERE id=$1 AND role='admin' AND status='active' AND deleted_at IS NULL AND (is_owner OR admin_scopes ? 'payments'))`, p.Administrator).Scan(&allowed); e != nil {
 				return e
 			}
 			if !allowed {
@@ -316,7 +316,7 @@ func (a *App) tgCommand(ctx context.Context, c tgConfig, user, chat int64, text 
 	buttons := [][]tgButton{}
 	switch command {
 	case "/start", "/help":
-		message = "星枢购买面板\n仅处理获授权的私聊查询；核实到账和开通操作请在后台完成。\n"
+		message = "星枢购买面板\n支持获授权的私聊查询与核款二次确认；请先在真实收款账户核对到账。\n"
 		for _, item := range []struct{ scope, cmd string }{{"overview", "/overview 运营概览"}, {"orders", "/orders 最近订单 /order 订单前8位"}, {"payments", "/payments 待核款订单"}, {"redpacket", "/redpacket 订单前8位 查看红包口令"}} {
 			if includes(p.Scopes, item.scope) {
 				message += item.cmd + "\n"
@@ -337,7 +337,7 @@ func (a *App) tgCommand(ctx context.Context, c tgConfig, user, chat int64, text 
 		}
 		var users, pending, review int
 		var paid int64
-		e := a.DB.QueryRow(ctx, `SELECT (SELECT count(*) FROM customers WHERE role='customer'),(SELECT count(*) FROM orders WHERE state='pending'),(SELECT count(*) FROM manual_payments WHERE state='submitted'),(SELECT COALESCE(sum(payable),0) FROM orders WHERE state='paid' AND paid_at>now()-interval '24 hours')`).Scan(&users, &pending, &review, &paid)
+		e := a.DB.QueryRow(ctx, `SELECT (SELECT count(*) FROM customers WHERE role='customer' AND deleted_at IS NULL),(SELECT count(*) FROM orders WHERE state='pending'),(SELECT count(*) FROM manual_payments WHERE state='submitted'),(SELECT COALESCE(sum(payable),0) FROM orders WHERE state='paid' AND paid_at>now()-interval '24 hours')`).Scan(&users, &pending, &review, &paid)
 		if e != nil {
 			return e
 		}
@@ -378,7 +378,7 @@ func (a *App) tgCommand(ctx context.Context, c tgConfig, user, chat int64, text 
 			return nil
 		}
 		if len(words) != 2 {
-			message = "格式：/redpacket 完整32位订单ID"
+			message = "格式：/redpacket 订单前8位（或选择订单按钮）"
 			break
 		}
 		orderID, err := a.tgOrderID(ctx, words[1])
@@ -397,7 +397,7 @@ func (a *App) tgCommand(ctx context.Context, c tgConfig, user, chat int64, text 
 		if _, e = a.DB.Exec(ctx, "INSERT INTO audit(actor,action,subject) VALUES($1,'telegram.redpacket.view',$2)", fmt.Sprint("telegram:", user), words[1]); e != nil {
 			return e
 		}
-		message = "订单 " + words[1] + "\n红包口令：" + value + "\n请仅在支付宝官方客户端领取并核对实际到账。机器人不领取、不自动批准。"
+		message = "订单 " + words[1] + "\n红包口令：" + value + "\n请仅在支付宝官方客户端领取并核对实际到账。机器人不代领；核对实际到账后可从订单按钮二次确认开通。"
 	default:
 		return nil
 	}
@@ -427,7 +427,7 @@ func (a *App) tgDeliver(ctx context.Context, c tgConfig) error {
 		return e
 	}
 	labels := map[string]string{"order.created": "新订单", "payment.submitted": "付款凭证 / 红包口令已提交", "payment.approve": "核款通过", "payment.reject": "凭证被驳回", "service.active": "服务已开通"}
-	message := fmt.Sprintf("星枢购买面板 · %s\n订单 %s\n应付 ¥%.2f · %s\n订单 %s / 核款 %s\n请在购买面板核验；通知不含完整口令。", labels[kind], order, float64(amount)/100, method, state, review)
+	message := fmt.Sprintf("星枢购买面板 · %s\n订单 %s\n应付 ¥%.2f · %s\n订单 %s / 核款 %s\n可点订单按钮核验；收款码需真实流水，红包需实际领取。通知不含完整口令。", labels[kind], order, float64(amount)/100, method, state, review)
 	for _, p := range c.Principals {
 		if !p.Notify || !includes(p.Scopes, scope) {
 			continue
@@ -511,7 +511,10 @@ func (a *App) tgTick(ctx context.Context) error {
 			} `json:"message"`
 		} `json:"callback_query"`
 		Message *struct {
-			Text string `json:"text"`
+			Text  string `json:"text"`
+			Reply *struct {
+				ID int64 `json:"message_id"`
+			} `json:"reply_to_message"`
 			From struct {
 				ID int64 `json:"id"`
 			} `json:"from"`
@@ -538,8 +541,17 @@ func (a *App) tgTick(ctx context.Context) error {
 			}
 		}
 		if u.Message != nil && u.Message.Chat.Type == "private" && len(u.Message.Text) <= 500 {
-			if e = a.tgCommand(ctx, latest, u.Message.From.ID, u.Message.Chat.ID, u.Message.Text); e != nil {
-				return e
+			handled := false
+			if u.Message.Reply != nil {
+				handled, e = a.tgPaymentReply(ctx, u.Message.From.ID, u.Message.Chat.ID, u.Message.Reply.ID, u.Message.Text)
+				if e != nil {
+					return e
+				}
+			}
+			if !handled {
+				if e = a.tgCommand(ctx, latest, u.Message.From.ID, u.Message.Chat.ID, u.Message.Text); e != nil {
+					return e
+				}
 			}
 		}
 		if _, e = a.DB.Exec(ctx, "UPDATE telegram_settings SET cursor=GREATEST(cursor,$1) WHERE id=true", u.ID+1); e != nil {

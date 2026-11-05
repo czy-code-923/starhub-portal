@@ -19,6 +19,18 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 			return e
 		}
 	}
+	if kind == "customers" && r.Method == "DELETE" {
+		r.SetPathValue("kind", kind)
+		return a.deleteAccount(w, r)
+	}
+	if kind == "customers" && r.Method == "GET" {
+		data, e := jsonRows(r.Context(), a.DB, `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,email,name,role,status,admin_version,deleted_at,created_at,email_verified_at FROM customers WHERE role='customer' AND (deleted_at IS NOT NULL)=$1 ORDER BY created_at DESC LIMIT 500)x`, r.URL.Query().Get("deleted") == "1")
+		if e != nil {
+			return e
+		}
+		send(w, 200, data)
+		return nil
+	}
 	if kind == "invitations" {
 		return a.manageInvitations(w, r)
 	}
@@ -48,7 +60,7 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 			return e
 		}
 		var registered, services int
-		_ = a.DB.QueryRow(r.Context(), "SELECT (SELECT count(*) FROM customers WHERE role='customer'),(SELECT count(*) FROM service_accounts)").Scan(&registered, &services)
+		_ = a.DB.QueryRow(r.Context(), "SELECT (SELECT count(*) FROM customers WHERE role='customer' AND deleted_at IS NULL),(SELECT count(*) FROM service_accounts)").Scan(&registered, &services)
 		result["registered_customers"] = registered
 		result["portal_services"] = services
 		send(w, 200, result)
@@ -217,7 +229,7 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 			return bad("无效账户状态")
 		}
 		id = b.ID
-		tag, err := tx.Exec(r.Context(), `UPDATE customers SET status=$2 WHERE id=$1 AND role='customer' AND email_verified_at IS NOT NULL AND status IN ('active','pending','disabled')`, id, b.Status)
+		tag, err := tx.Exec(r.Context(), `UPDATE customers SET status=$2,admin_version=admin_version+1 WHERE id=$1 AND role='customer' AND deleted_at IS NULL AND email_verified_at IS NOT NULL AND status IN ('active','pending','disabled')`, id, b.Status)
 		e = err
 		if e == nil && tag.RowsAffected() != 1 {
 			return bad("账户未验证或不允许修改管理员")

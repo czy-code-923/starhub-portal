@@ -395,12 +395,26 @@ func (a *App) reviewManual(ctx context.Context, reviewer actor, id string, b man
 	if e = lock(ctx, tx); e != nil {
 		return "", e
 	}
+	fresh, e := actorRow(tx.QueryRow(ctx, "SELECT id,email,name,role,is_owner,admin_scopes FROM customers WHERE id=$1 AND status='active' AND deleted_at IS NULL FOR UPDATE", reviewer.ID))
+	if e != nil || !fresh.can("payments") {
+		return "", Problem{403, "核款管理员已停用、已删除或权限已撤销"}
+	}
+	reviewer = fresh
 	var order, user, state, orderState, verified, provider, method string
 	var version int
 	var amount int64
 	var expiry, created, deadline time.Time
 	if e = tx.QueryRow(ctx, `SELECT m.order_id,o.customer_id,m.state,m.version,o.payable,o.state,o.expires_at,o.created_at,m.review_deadline,COALESCE(m.verified_reference,''),m.provider,m.method_id FROM manual_payments m JOIN orders o ON o.id=m.order_id WHERE m.id=$1 FOR UPDATE OF m,o`, id).Scan(&order, &user, &state, &version, &amount, &orderState, &expiry, &created, &deadline, &verified, &provider, &method); e != nil {
 		return "", e
+	}
+	if b.Decision == "approve" {
+		var deleted bool
+		if e = tx.QueryRow(ctx, "SELECT deleted_at IS NOT NULL FROM customers WHERE id=$1", user).Scan(&deleted); e != nil {
+			return "", e
+		}
+		if deleted {
+			return "", Problem{409, "购买用户已删除，请先核对恢复账户或人工处理退款"}
+		}
 	}
 	if b.Decision == "approve" {
 		if method == "alipay_redpacket" && b.Reference == "" {

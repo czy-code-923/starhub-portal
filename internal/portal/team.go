@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-var adminScopeNames = map[string]string{"plans": "套餐与分类", "customers": "用户与审核", "orders": "订单查询", "payments": "付款凭证审核", "coupons": "优惠码", "invitations": "注册邀请", "announcements": "公告", "support": "工单", "jobs": "业务任务重试", "audit": "操作记录"}
+var adminScopeNames = map[string]string{"plans": "套餐与分类", "content": "客户端教程编辑", "delete_customers": "删除 / 恢复购买用户", "customers": "用户与审核", "orders": "订单查询", "payments": "付款凭证审核", "coupons": "优惠码", "invitations": "注册邀请", "announcements": "公告", "support": "工单", "jobs": "业务任务重试", "audit": "操作记录"}
 
 func (u actor) can(scope string) bool {
 	return u.Role == "admin" && (u.Owner || includes(u.Scopes, scope))
@@ -38,9 +38,13 @@ func (a *App) team(w http.ResponseWriter, r *http.Request) error {
 	if e := requireOwner(r); e != nil {
 		return e
 	}
+	if r.Method == "DELETE" {
+		r.SetPathValue("kind", "administrators")
+		return a.deleteAccount(w, r)
+	}
 	ctx := r.Context()
 	if r.Method == "GET" {
-		rows, e := jsonRows(ctx, a.DB, `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,email,name,is_owner,admin_scopes,admin_version,status,created_at FROM customers WHERE role='admin' ORDER BY is_owner DESC,created_at)x`)
+		rows, e := jsonRows(ctx, a.DB, `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,email,name,is_owner,admin_scopes,admin_version,status,deleted_at,created_at FROM customers WHERE role='admin' AND (deleted_at IS NOT NULL)=$1 ORDER BY is_owner DESC,created_at)x`, r.URL.Query().Get("deleted") == "1")
 		if e != nil {
 			return e
 		}
@@ -73,6 +77,9 @@ func (a *App) team(w http.ResponseWriter, r *http.Request) error {
 		}
 		seen[s] = true
 	}
+	if seen["delete_customers"] && !seen["customers"] {
+		return bad("删除用户还需要用户管理权限")
+	}
 	email, e := emailAddress(b.Email)
 	if e != nil {
 		return e
@@ -102,7 +109,7 @@ func (a *App) team(w http.ResponseWriter, r *http.Request) error {
 	id := b.ID
 	if id == "" {
 		var count int
-		if e = tx.QueryRow(ctx, "SELECT count(*) FROM customers WHERE role='admin'").Scan(&count); e != nil {
+		if e = tx.QueryRow(ctx, "SELECT count(*) FROM customers WHERE role='admin' AND deleted_at IS NULL").Scan(&count); e != nil {
 			return e
 		}
 		if count >= 20 {
@@ -114,7 +121,7 @@ func (a *App) team(w http.ResponseWriter, r *http.Request) error {
 		var owner bool
 		var oldEmail string
 		var version int
-		if e = tx.QueryRow(ctx, "SELECT is_owner,email,admin_version FROM customers WHERE id=$1 AND role='admin' FOR UPDATE", id).Scan(&owner, &oldEmail, &version); e != nil {
+		if e = tx.QueryRow(ctx, "SELECT is_owner,email,admin_version FROM customers WHERE id=$1 AND role='admin' AND deleted_at IS NULL FOR UPDATE", id).Scan(&owner, &oldEmail, &version); e != nil {
 			return e
 		}
 		if owner {

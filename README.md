@@ -10,6 +10,14 @@
 
 升级购买面板时，同机且已有受限本机星枢更新器会自动请求本版所需的官方兼容更新；外部星枢须先由管理员升级到 0.25.0+。更新包均校验 SHA-256，失败保留恢复路径。版本页显示兼容状态、独立身份容量和本面板容器资源。
 
+## 运营功能
+
+客户端教程可在“客户端教程 → 编辑教程”维护，支持按平台配置步骤、说明链接和常见问题；副管理员需获得“客户端教程编辑”权限。套餐类别统一使用相同卡片结构。
+
+Telegram 核款需要专用机器人的独立轮询模式，并明确授权现有私聊用户“付款核验”和“核验红包 / 收款码并开通”，绑定有核款权限的后台管理员；红包还需口令查看权限。红包必须先在支付宝实际领取再二次确认；支付宝/微信静态码通过回复真实流水、金额和北京时间后再确认，不会根据截图或口令自动认定付款成功。
+
+副管理员和购买用户支持删除与恢复。删除撤销登录，用户的全部代理撤权通过队列同步；订单核账记录保留。恢复默认停用，未验证账户须重新验证。删除主管理员或自己会被拒绝。副管理员删除用户需额外分配删除权限。
+
 ## Linux 一键部署
 
 Debian / Ubuntu、RHEL / Rocky / AlmaLinux / Fedora 等主流 Linux，x86_64 / aarch64。安装器检查 Python 3.10+、可用的 Docker Engine 和 Compose v2；缺少 Docker 时从 Docker 官方源安装。不会重装宝塔、Nginx、Docker 或原有控制面。
@@ -129,7 +137,7 @@ sudo python3 /opt/starhub-portal/scripts/manage.py update
 指定正式版本：
 
 ```sh
-sudo python3 /opt/starhub-portal/scripts/manage.py update --version 0.4.1
+sudo python3 /opt/starhub-portal/scripts/manage.py update --version 0.5.0
 ```
 
 助手未运行时：

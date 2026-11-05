@@ -39,7 +39,8 @@ func (a *App) WorkOnce(ctx context.Context) error {
 		var id, kind, subject string
 		var payload []byte
 		var attempts int
-		e := a.DB.QueryRow(ctx, `UPDATE jobs SET state='working',attempts=attempts+1,lease_until=now()+interval '2 minutes',updated_at=now() WHERE id=(SELECT id FROM jobs WHERE kind IN ('mail','fulfill','access','migrate') AND ((state='queued' AND available_at<=now()) OR (state='working' AND lease_until<now())) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,kind,subject,payload,attempts`).Scan(&id, &kind, &subject, &payload, &attempts)
+		lease := ID()
+		e := a.DB.QueryRow(ctx, `UPDATE jobs SET lease_generation=$1,state='working',attempts=attempts+1,lease_until=now()+interval '2 minutes',updated_at=now() WHERE id=(SELECT id FROM jobs WHERE kind IN ('mail','fulfill','access','migrate') AND ((state='queued' AND available_at<=now()) OR (state='working' AND lease_until<now())) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,kind,subject,payload,attempts`, lease).Scan(&id, &kind, &subject, &payload, &attempts)
 		if e == pgx.ErrNoRows {
 			return nil
 		}
@@ -65,8 +66,12 @@ func (a *App) WorkOnce(ctx context.Context) error {
 			detail = safeJobError(e)
 			next = next.Add(time.Duration(min(3600, 30*(1<<min(attempts, 6)))) * time.Second)
 		}
-		if _, err := a.DB.Exec(ctx, "UPDATE jobs SET state=$2,detail=$3,available_at=$4,lease_until=NULL,updated_at=now() WHERE id=$1", id, state, detail, next); err != nil {
+		completed, err := a.DB.Exec(ctx, "UPDATE jobs SET state=$2,detail=$3,available_at=$4,lease_until=NULL,lease_generation=NULL,updated_at=now() WHERE id=$1 AND state='working' AND lease_generation=$5", id, state, detail, next, lease)
+		if err != nil {
 			return err
+		}
+		if completed.RowsAffected() == 0 {
+			continue
 		}
 		if kind == "fulfill" && state == "failed" {
 			_, _ = a.DB.Exec(ctx, "UPDATE orders SET fulfillment='failed' WHERE id=$1 AND state='paid'", subject)
@@ -206,46 +211,61 @@ func (a *App) fulfill(ctx context.Context, order string) error {
 	return tx.Commit(ctx)
 }
 func (a *App) syncAccess(ctx context.Context, user string) error {
-	var status string
-	if e := a.DB.QueryRow(ctx, "SELECT status FROM customers WHERE id=$1 AND role='customer'", user).Scan(&status); e != nil {
-		return e
-	}
-	// External ID remains authoritative if a grant succeeded remotely but its
-	// response was lost before the local account mapping could be persisted.
-	rows, e := a.DB.Query(ctx, `SELECT external_id FROM service_accounts WHERE customer_id=$1 UNION SELECT 'portal:'||id FROM orders WHERE customer_id=$1 AND state='paid' UNION SELECT 'portal:'||$1::text WHERE NOT EXISTS(SELECT 1 FROM service_migrations WHERE customer_id=$1 AND state='applied')`, user)
-	if e != nil {
-		return e
-	}
-	external := []string{}
-	for rows.Next() {
-		var id string
-		if e = rows.Scan(&id); e != nil {
-			rows.Close()
+	for pass := 0; pass < 3; pass++ {
+		var status string
+		if e := a.DB.QueryRow(ctx, "SELECT status FROM customers WHERE id=$1 AND role='customer'", user).Scan(&status); e != nil {
 			return e
 		}
-		external = append(external, id)
-	}
-	rows.Close()
-	if e = rows.Err(); e != nil {
-		return e
-	}
-	for _, id := range external {
-		err := a.control(ctx, "PUT", "commerce/accounts/"+strings.TrimPrefix(id, "portal:")+"/state", map[string]any{"external_id": id, "enabled": status == "active"}, nil)
-		var p Problem
-		if errors.As(err, &p) && p.Status == 404 {
-			continue
+		// External ID remains authoritative if a grant succeeded remotely but its
+		// response was lost before the local account mapping could be persisted.
+		rows, e := a.DB.Query(ctx, `SELECT external_id FROM service_accounts WHERE customer_id=$1 UNION SELECT 'portal:'||id FROM orders WHERE customer_id=$1 AND state='paid' UNION SELECT 'portal:'||$1::text WHERE NOT EXISTS(SELECT 1 FROM service_migrations WHERE customer_id=$1 AND state='applied')`, user)
+		if e != nil {
+			return e
 		}
-		if err != nil {
-			return err
+		external := []string{}
+		for rows.Next() {
+			var id string
+			if e = rows.Scan(&id); e != nil {
+				rows.Close()
+				return e
+			}
+			external = append(external, id)
+		}
+		rows.Close()
+		if e = rows.Err(); e != nil {
+			return e
+		}
+		for _, id := range external {
+			err := a.control(ctx, "PUT", "commerce/accounts/"+strings.TrimPrefix(id, "portal:")+"/state", map[string]any{"external_id": id, "enabled": status == "active"}, nil)
+			var p Problem
+			if errors.As(err, &p) && p.Status == 404 {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+		}
+		var latest string
+		if e := a.DB.QueryRow(ctx, "SELECT status FROM customers WHERE id=$1", user).Scan(&latest); e != nil {
+			return e
+		}
+		if latest == status {
+			return nil
 		}
 	}
-	return nil
+	return Problem{409, "账户权限持续变化，等待重试同步"}
 }
-
 func (a *App) sendJobMail(ctx context.Context, payload []byte) error {
 	var p map[string]string
 	if e := a.unseal(payload, &p); e != nil {
 		return e
+	}
+	var valid bool
+	if e := a.DB.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM email_tokens t JOIN customers c ON c.id=t.customer_id WHERE t.token_hash=$1 AND t.used_at IS NULL AND t.expires_at>$2 AND c.deleted_at IS NULL)", hash(p["token"]), a.now()).Scan(&valid); e != nil {
+		return e
+	}
+	if !valid {
+		return nil
 	}
 	s, secrets, e := a.settings(ctx)
 	if e != nil {
