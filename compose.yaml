@@ -19,7 +19,7 @@ services:
     logging: {driver: json-file, options: {max-size: 5m, max-file: "3"}}
     networks: [private]
   app:
-    image: starhub-portal-local:${PORTAL_VERSION:-0.3.2}
+    image: starhub-portal-local:${PORTAL_VERSION:-0.4.0}
     build: {context: "./current", dockerfile: Runtime.Dockerfile}
     restart: unless-stopped
     env_file: ["./portal.env"]
@@ -27,6 +27,7 @@ services:
       DATABASE_URL: postgres://portal:${DB_PASSWORD:?required}@db:5432/portal?sslmode=disable
       LISTEN_ADDR: 0.0.0.0:18088
       WEB_DIR: /app/web
+      GOMEMLIMIT: 192MiB
     ports: ["${BIND_IP:-0.0.0.0}:${PORTAL_PORT:-18088}:18088"]
     depends_on: {db: {condition: service_healthy}}
     read_only: true

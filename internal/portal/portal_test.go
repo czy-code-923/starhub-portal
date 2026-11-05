@@ -64,11 +64,16 @@ func setup(t *testing.T) *fixture {
 			t.Error("missing restricted core key")
 		}
 		switch {
+		case r.URL.Path == "/api/v1/commerce/capacity":
+			send(w, 200, map[string]int{"remaining_identities": 400, "identity_limit": 500, "identities": 100})
 		case r.URL.Path == "/api/v1/commerce/validate":
 			send(w, 200, map[string]any{"ready": f.ready.Load(), "reason": "fixture not ready"})
 		case r.URL.Path == "/api/v1/commerce/entitlements":
 			f.grants.Add(1)
-			send(w, 200, map[string]string{"user_id": strings.Repeat("b", 32), "subscription_id": strings.Repeat("c", 32), "operation_id": "mock-operation"})
+			var b map[string]any
+			json.NewDecoder(r.Body).Decode(&b)
+			external, _ := b["external_id"].(string)
+			send(w, 200, map[string]string{"user_id": hash("user/" + external)[:32], "subscription_id": hash("sub/" + external)[:32], "operation_id": b["order_id"].(string)})
 		case strings.HasSuffix(r.URL.Path, "/check"):
 			send(w, 200, map[string]bool{"ready": true})
 		default:
@@ -443,7 +448,7 @@ func TestDisableDuringGrantAndLostMappingAreRevoked(t *testing.T) {
 	if e := f.a.fulfill(ctx, order); e == nil {
 		t.Fatal("disabled customer was marked active")
 	}
-	if revoked.Load() != 1 {
+	if revoked.Load() != 2 {
 		t.Fatal("concurrent disable was not synchronized")
 	}
 	if _, e := f.a.DB.Exec(ctx, "DELETE FROM service_accounts WHERE customer_id=$1", f.customer.ID); e != nil {
@@ -452,7 +457,7 @@ func TestDisableDuringGrantAndLostMappingAreRevoked(t *testing.T) {
 	if e := f.a.syncAccess(ctx, f.customer.ID); e != nil {
 		t.Fatal(e)
 	}
-	if revoked.Load() != 2 {
+	if revoked.Load() != 4 {
 		t.Fatal("lost account mapping bypassed remote revocation")
 	}
 }

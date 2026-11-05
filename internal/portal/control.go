@@ -15,6 +15,16 @@ import (
 
 type controlSecretKey struct{}
 
+// Load settings before acquiring a transaction/lock: waiting requests must not
+// exhaust the small pool while a lock holder needs a second connection.
+func (a *App) withControlSecrets(r *http.Request) (*http.Request, error) {
+	_, secret, e := a.settings(r.Context())
+	if e != nil {
+		return r, e
+	}
+	return r.WithContext(context.WithValue(r.Context(), controlSecretKey{}, secret)), nil
+}
+
 func (a *App) controlRequest(ctx context.Context, method, path string, body any) (*http.Response, error) {
 	secret, ok := ctx.Value(controlSecretKey{}).(Secrets)
 	var e error
@@ -97,11 +107,12 @@ func (a *App) checkGroups(ctx context.Context, groups, protocols []string) error
 }
 func (a *App) account(ctx context.Context, user string) (string, string, error) {
 	var id, subscription string
-	e := a.DB.QueryRow(ctx, "SELECT control_user_id,subscription_id FROM service_accounts WHERE customer_id=$1", user).Scan(&id, &subscription)
+	e := a.DB.QueryRow(ctx, "SELECT control_user_id,subscription_id FROM service_accounts WHERE customer_id=$1 ORDER BY updated_at DESC,order_id DESC LIMIT 1", user).Scan(&id, &subscription)
 	return id, subscription, e
 }
 func (a *App) service(w http.ResponseWriter, r *http.Request) error {
-	id, _, e := a.account(r.Context(), current(r).ID)
+	selected, e := a.selectedService(r)
+	id := selected.User
 	if e == pgx.ErrNoRows {
 		send(w, 200, map[string]any{"service": nil})
 		return nil
@@ -118,8 +129,11 @@ func (a *App) service(w http.ResponseWriter, r *http.Request) error {
 		safe[field] = u[field]
 	}
 	var name string
-	_ = a.DB.QueryRow(r.Context(), "SELECT p.name FROM service_accounts s JOIN plans p ON p.id=s.plan_id WHERE s.customer_id=$1", current(r).ID).Scan(&name)
+	_ = a.DB.QueryRow(r.Context(), "SELECT snapshot->'plan'->>'name' FROM orders WHERE id=$1", selected.Order).Scan(&name)
 	safe["plan_name"] = name
+	safe["order_id"] = selected.Order
+	safe["quota_unit"] = selected.Unit
+	safe["legacy_combined"] = selected.Legacy
 	send(w, 200, map[string]any{"service": safe})
 	return nil
 }
@@ -132,15 +146,22 @@ func (a *App) clients(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 func (a *App) subscription(w http.ResponseWriter, r *http.Request) error {
-	_, subscription, e := a.account(r.Context(), current(r).ID)
-	if e != nil {
+	selected, e := a.selectedService(r)
+	subscription := selected.Subscription
+	if e == pgx.ErrNoRows {
 		return Problem{404, "尚未开通套餐"}
+	}
+	if e != nil {
+		return e
 	}
 	view := r.PathValue("view")
 	if !includes([]string{"share", "qr", "content", "nodes", "check"}, view) {
 		return bad("不支持的订阅操作")
 	}
 	client := r.URL.Query().Get("client")
+	if view == "content" && (client == "" || client == "auto") {
+		client = "mihomo"
+	}
 	if len(client) > 40 || strings.ContainsAny(client, "/\\\r\n&?#") {
 		return bad("客户端参数无效")
 	}
@@ -162,13 +183,24 @@ func (a *App) subscription(w http.ResponseWriter, r *http.Request) error {
 			w.Header().Set(h, v)
 		}
 	}
+	if view == "content" {
+		ext := "txt"
+		if strings.Contains(client, "sing-box") || client == "hiddify" || client == "hiddify-app" {
+			ext = "json"
+		}
+		if client == "mihomo" || client == "clash" {
+			ext = "yaml"
+		}
+		w.Header().Set("Content-Disposition", `attachment; filename="starhub-`+selected.Order+`.`+ext+`"`)
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(200)
 	_, e = w.Write(data)
 	return e
 }
 func (a *App) devices(w http.ResponseWriter, r *http.Request) error {
-	id, _, e := a.account(r.Context(), current(r).ID)
+	selected, e := a.selectedService(r)
+	id := selected.User
 	if e == pgx.ErrNoRows {
 		send(w, 200, []any{})
 		return nil

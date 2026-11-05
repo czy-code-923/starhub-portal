@@ -47,29 +47,35 @@ type Price struct {
 	Enabled bool   `json:"enabled"`
 }
 type Plan struct {
-	Simulation      bool      `json:"simulation"`
-	ID              string    `json:"id"`
-	Version         int       `json:"version"`
-	CategoryID      string    `json:"category_id"`
-	Name            string    `json:"name"`
-	Description     string    `json:"description"`
-	Enabled         bool      `json:"enabled"`
-	Recommended     bool      `json:"recommended"`
-	Sort            int       `json:"sort"`
-	Starts          time.Time `json:"starts_at"`
-	Ends            time.Time `json:"ends_at"`
-	RecommendStarts time.Time `json:"recommend_starts_at"`
-	RecommendEnds   time.Time `json:"recommend_ends_at"`
-	Quota           int64     `json:"quota_bytes"`
-	Groups          []string  `json:"group_ids"`
-	Protocols       []string  `json:"protocols"`
-	Prices          []Price   `json:"prices"`
-	MaxDevices      int       `json:"max_devices"`
-	Billing         string    `json:"billing_mode"`
-	Multiplier      int       `json:"multiplier_milli"`
-	Stock           int       `json:"stock"`
-	AllowNew        bool      `json:"allow_new"`
-	AllowRenew      bool      `json:"allow_renew"`
+	DisplayFeatures []PlanFeature `json:"display_features"`
+	Simulation      bool          `json:"simulation"`
+	ID              string        `json:"id"`
+	Version         int           `json:"version"`
+	CategoryID      string        `json:"category_id"`
+	Name            string        `json:"name"`
+	Description     string        `json:"description"`
+	Enabled         bool          `json:"enabled"`
+	Recommended     bool          `json:"recommended"`
+	Sort            int           `json:"sort"`
+	Starts          time.Time     `json:"starts_at"`
+	Ends            time.Time     `json:"ends_at"`
+	RecommendStarts time.Time     `json:"recommend_starts_at"`
+	RecommendEnds   time.Time     `json:"recommend_ends_at"`
+	Quota           int64         `json:"quota_bytes"`
+	QuotaUnit       string        `json:"quota_unit"`
+	Groups          []string      `json:"group_ids"`
+	Protocols       []string      `json:"protocols"`
+	Prices          []Price       `json:"prices"`
+	MaxDevices      int           `json:"max_devices"`
+	Billing         string        `json:"billing_mode"`
+	Multiplier      int           `json:"multiplier_milli"`
+	Stock           int           `json:"stock"`
+	AllowNew        bool          `json:"allow_new"`
+	AllowRenew      bool          `json:"allow_renew"`
+}
+type PlanFeature struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
 }
 type Coupon struct {
 	ID          string    `json:"id"`
@@ -116,7 +122,7 @@ func (a *App) public(w http.ResponseWriter, r *http.Request) error {
 		return e
 	}
 	var announcements json.RawMessage
-	announcements, e = jsonRows(r.Context(), a.DB, `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,title,body,created_at FROM announcements WHERE enabled ORDER BY created_at DESC LIMIT 30)x`)
+	announcements, e = jsonRows(r.Context(), a.DB, `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,title,body,pinned,pin_order,created_at FROM announcements WHERE enabled ORDER BY pinned DESC,pin_order,created_at DESC,id LIMIT 100)x`)
 	if e != nil {
 		return e
 	}

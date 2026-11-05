@@ -72,7 +72,7 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request) error {
 				prices = append(prices, pr)
 			}
 		}
-		plans = append(plans, map[string]any{"id": p.ID, "category_id": p.CategoryID, "name": p.Name, "description": p.Description, "recommended": p.Recommended && !a.now().Before(p.RecommendStarts) && a.now().Before(p.RecommendEnds), "quota_bytes": p.Quota, "prices": prices, "protocols": p.Protocols, "max_devices": p.MaxDevices, "billing_mode": p.Billing, "multiplier_milli": p.Multiplier, "allow_new": p.AllowNew, "allow_renew": p.AllowRenew, "simulation": p.Simulation})
+		plans = append(plans, map[string]any{"id": p.ID, "category_id": p.CategoryID, "name": p.Name, "description": p.Description, "recommended": p.Recommended && !a.now().Before(p.RecommendStarts) && a.now().Before(p.RecommendEnds), "quota_bytes": p.Quota, "quota_unit": p.QuotaUnit, "display_features": p.DisplayFeatures, "prices": prices, "protocols": p.Protocols, "max_devices": p.MaxDevices, "allow_new": p.AllowNew, "allow_renew": p.AllowRenew, "simulation": p.Simulation})
 	}
 	if e = rows.Err(); e != nil {
 		return e
@@ -105,19 +105,15 @@ func (a *App) calculate(r *http.Request, tx pgx.Tx, b Buy) (Quote, error) {
 		return q, bad("价格选项不可用")
 	}
 	var paid int
-	var lastPlan string
 	if e = tx.QueryRow(r.Context(), "SELECT count(*) FROM orders WHERE customer_id=$1 AND state IN ('paid','refund_pending','refunded')", current(r).ID).Scan(&paid); e != nil {
 		return q, e
 	}
-	if paid == 0 && !p.AllowNew || paid > 0 && !p.AllowRenew {
-		return q, bad("套餐不允许本次购买类型")
-	}
-	e = tx.QueryRow(r.Context(), "SELECT plan_id FROM service_accounts WHERE customer_id=$1", current(r).ID).Scan(&lastPlan)
-	if e != nil && e != pgx.ErrNoRows {
+	var samePlan int
+	if e = tx.QueryRow(r.Context(), "SELECT count(*) FROM orders WHERE customer_id=$1 AND plan_id=$2 AND state='paid'", current(r).ID, p.ID).Scan(&samePlan); e != nil {
 		return q, e
 	}
-	if e == nil && lastPlan != p.ID {
-		return q, bad("已有其他套餐，请联系管理员安排套餐切换")
+	if samePlan == 0 && !p.AllowNew || samePlan > 0 && !p.AllowRenew {
+		return q, bad("套餐不允许本次购买类型")
 	}
 	if p.Stock > 0 {
 		var used int
@@ -184,6 +180,11 @@ func (a *App) calculate(r *http.Request, tx pgx.Tx, b Buy) (Quote, error) {
 	return q, nil
 }
 func (a *App) quote(w http.ResponseWriter, r *http.Request) error {
+	var preload error
+	r, preload = a.withControlSecrets(r)
+	if preload != nil {
+		return preload
+	}
 	if e := a.limit(r, "quote", 60); e != nil {
 		return e
 	}
@@ -204,6 +205,11 @@ func (a *App) quote(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 func (a *App) createOrder(w http.ResponseWriter, r *http.Request) error {
+	var preload error
+	r, preload = a.withControlSecrets(r)
+	if preload != nil {
+		return preload
+	}
 	if e := a.limit(r, "order", 20); e != nil {
 		return e
 	}
@@ -246,6 +252,21 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) error {
 	if e != nil {
 		return e
 	}
+	capacity, err := a.capacity(r.Context())
+	if err != nil {
+		return err
+	}
+	remaining, ok := capacity["remaining_identities"].(float64)
+	if !ok {
+		return Problem{503, "控制面容量信息无效，请先升级控制面"}
+	}
+	var reserved int
+	if err = tx.QueryRow(r.Context(), "SELECT count(*) FROM orders WHERE state='pending' OR (state='paid' AND fulfillment<>'active' AND per_order)").Scan(&reserved); err != nil {
+		return err
+	}
+	if int(remaining) <= reserved {
+		return Problem{409, "可用独立订阅名额已被已付或待付订单预占，请稍后再试"}
+	}
 	id := ID()
 	snapshot := map[string]any{"plan": q.Plan, "price": q.Price, "coupon_code": q.CouponCode, "discount_amount": q.Discount}
 	_, e = tx.Exec(r.Context(), `INSERT INTO orders(id,customer_id,plan_id,price_id,snapshot,base_amount,discount_amount,payable,coupon_id,expires_at,request_key,request_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11,$12)`, id, current(r).ID, b.PlanID, b.PriceID, raw(snapshot), q.Base, q.Discount, q.Payable, q.CouponID, q.Expires, b.Key, requestHash)
@@ -265,7 +286,7 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 func (a *App) orders(w http.ResponseWriter, r *http.Request) error {
-	data, e := jsonRows(r.Context(), a.DB, `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,plan_id,price_id,(SELECT state FROM manual_payments m WHERE m.order_id=o.id) manual_state,snapshot->'plan'->>'name' plan_name,base_amount,discount_amount,payable,state,fulfillment,expires_at,paid_at,created_at FROM orders o WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 100)x`, current(r).ID)
+	data, e := jsonRows(r.Context(), a.DB, `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,plan_id,price_id,EXISTS(SELECT 1 FROM service_accounts s WHERE s.order_id=o.id) has_subscription,(SELECT state FROM manual_payments m WHERE m.order_id=o.id) manual_state,snapshot->'plan'->>'name' plan_name,base_amount,discount_amount,payable,state,fulfillment,expires_at,paid_at,created_at FROM orders o WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 100)x`, current(r).ID)
 	if e != nil {
 		return e
 	}

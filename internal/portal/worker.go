@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/smtp"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -38,7 +39,7 @@ func (a *App) WorkOnce(ctx context.Context) error {
 		var id, kind, subject string
 		var payload []byte
 		var attempts int
-		e := a.DB.QueryRow(ctx, `UPDATE jobs SET state='working',attempts=attempts+1,lease_until=now()+interval '2 minutes',updated_at=now() WHERE id=(SELECT id FROM jobs WHERE kind IN ('mail','fulfill','access') AND ((state='queued' AND available_at<=now()) OR (state='working' AND lease_until<now())) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,kind,subject,payload,attempts`).Scan(&id, &kind, &subject, &payload, &attempts)
+		e := a.DB.QueryRow(ctx, `UPDATE jobs SET state='working',attempts=attempts+1,lease_until=now()+interval '2 minutes',updated_at=now() WHERE id=(SELECT id FROM jobs WHERE kind IN ('mail','fulfill','access','migrate') AND ((state='queued' AND available_at<=now()) OR (state='working' AND lease_until<now())) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,kind,subject,payload,attempts`).Scan(&id, &kind, &subject, &payload, &attempts)
 		if e == pgx.ErrNoRows {
 			return nil
 		}
@@ -46,6 +47,8 @@ func (a *App) WorkOnce(ctx context.Context) error {
 			return e
 		}
 		switch kind {
+		case "migrate":
+			e = a.migrateCustomer(ctx, subject)
 		case "fulfill":
 			e = a.fulfill(ctx, subject)
 		case "mail":
@@ -79,15 +82,22 @@ func safeJobError(e error) string {
 	return "任务暂未完成，请检查连接配置、商业接口版本及服务状态"
 }
 func (a *App) fulfill(ctx context.Context, order string) error {
-	var user, state string
+	var user, state, fulfillment string
 	var snap []byte
 	var created time.Time
-	if e := a.DB.QueryRow(ctx, "SELECT customer_id,state,snapshot,created_at FROM orders WHERE id=$1", order).Scan(&user, &state, &snap, &created); e != nil {
+	var perOrder bool
+	var savedPayload []byte
+	if e := a.DB.QueryRow(ctx, "SELECT customer_id,state,snapshot,created_at,per_order,fulfillment_payload,fulfillment FROM orders WHERE id=$1", order).Scan(&user, &state, &snap, &created, &perOrder, &savedPayload, &fulfillment); e != nil {
 		return e
 	}
-	if state != "paid" {
+	if state != "paid" || fulfillment == "active" {
 		return nil
 	}
+	_, secret, secretErr := a.settings(ctx)
+	if secretErr != nil {
+		return secretErr
+	}
+	ctx = context.WithValue(ctx, controlSecretKey{}, secret)
 	conn, e := a.DB.Acquire(ctx)
 	if e != nil {
 		return e
@@ -98,10 +108,10 @@ func (a *App) fulfill(ctx context.Context, order string) error {
 	}
 	defer conn.Exec(context.Background(), "SELECT pg_advisory_unlock(hashtext($1))", "portal-user:"+user)
 	var earlier bool
-	if e = conn.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM orders WHERE customer_id=$1 AND state='paid' AND fulfillment<>'active' AND (created_at,id)<($2,$3))`, user, created, order).Scan(&earlier); e != nil {
+	if e = conn.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM orders WHERE customer_id=$1 AND state='paid' AND fulfillment<>'active' AND NOT per_order AND (created_at,id)<($2,$3))`, user, created, order).Scan(&earlier); e != nil {
 		return e
 	}
-	if earlier {
+	if earlier && !perOrder {
 		return Problem{409, "等待该用户更早的已支付订单开通"}
 	}
 	var snapshot struct {
@@ -129,7 +139,23 @@ func (a *App) fulfill(ctx context.Context, order string) error {
 		SubscriptionID string `json:"subscription_id"`
 		Operation      string `json:"operation_id"`
 	}
-	body := map[string]any{"external_id": "portal:" + user, "order_id": order, "name": name, "months": snapshot.Price.Months, "quota_bytes": snapshot.Plan.Quota, "group_ids": snapshot.Plan.Groups, "protocols": snapshot.Plan.Protocols, "max_devices": snapshot.Plan.MaxDevices, "billing_mode": snapshot.Plan.Billing, "multiplier_milli": snapshot.Plan.Multiplier}
+	body := map[string]any{"external_id": "portal:" + order, "order_id": order, "name": grantName(name, snapshot.Plan.Name, order), "months": snapshot.Price.Months, "quota_bytes": snapshot.Plan.Quota, "group_ids": snapshot.Plan.Groups, "protocols": snapshot.Plan.Protocols, "max_devices": snapshot.Plan.MaxDevices, "billing_mode": snapshot.Plan.Billing, "multiplier_milli": snapshot.Plan.Multiplier}
+	if !perOrder {
+		body["external_id"] = "portal:" + user
+		body["name"] = name
+	}
+	if len(savedPayload) == 0 {
+		sealed, err := a.seal(body)
+		if err != nil {
+			return err
+		}
+		if err = conn.QueryRow(ctx, "UPDATE orders SET fulfillment_payload=COALESCE(fulfillment_payload,$2) WHERE id=$1 RETURNING fulfillment_payload", order, sealed).Scan(&savedPayload); err != nil {
+			return err
+		}
+	}
+	if e = a.unseal(savedPayload, &body); e != nil {
+		return e
+	}
 	if e = a.control(ctx, "POST", "commerce/entitlements", body, &result); e != nil {
 		return e
 	}
@@ -138,7 +164,7 @@ func (a *App) fulfill(ctx context.Context, order string) error {
 	}
 	// Persist the mapping before waiting for Agent convergence. A concurrent
 	// disable job can then revoke the actual identity, even if this job retries.
-	if _, e = conn.Exec(ctx, `INSERT INTO service_accounts(customer_id,control_user_id,subscription_id,plan_id,last_order_id) VALUES($1,$2,$3,$4,$5) ON CONFLICT(customer_id) DO UPDATE SET control_user_id=excluded.control_user_id,subscription_id=excluded.subscription_id,plan_id=excluded.plan_id,last_order_id=excluded.last_order_id,updated_at=now()`, user, result.UserID, result.SubscriptionID, snapshot.Plan.ID, order); e != nil {
+	if _, e = conn.Exec(ctx, `INSERT INTO service_accounts(customer_id,control_user_id,subscription_id,plan_id,last_order_id,order_id,external_id,legacy_combined) VALUES($1,$2,$3,$4,$5,$5,$6,$7) ON CONFLICT(order_id) DO UPDATE SET updated_at=now()`, user, result.UserID, result.SubscriptionID, snapshot.Plan.ID, order, body["external_id"], !perOrder); e != nil {
 		return e
 	}
 	if e = conn.QueryRow(ctx, "SELECT status FROM customers WHERE id=$1", user).Scan(&status); e != nil {
@@ -165,7 +191,7 @@ func (a *App) fulfill(ctx context.Context, order string) error {
 		return e
 	}
 	defer tx.Rollback(ctx)
-	if _, e = tx.Exec(ctx, `INSERT INTO service_accounts(customer_id,control_user_id,subscription_id,plan_id,last_order_id) VALUES($1,$2,$3,$4,$5) ON CONFLICT(customer_id) DO UPDATE SET control_user_id=excluded.control_user_id,subscription_id=excluded.subscription_id,plan_id=excluded.plan_id,last_order_id=excluded.last_order_id,updated_at=now()`, user, result.UserID, result.SubscriptionID, snapshot.Plan.ID, order); e != nil {
+	if _, e = tx.Exec(ctx, `INSERT INTO service_accounts(customer_id,control_user_id,subscription_id,plan_id,last_order_id,order_id,external_id,legacy_combined) VALUES($1,$2,$3,$4,$5,$5,$6,$7) ON CONFLICT(order_id) DO UPDATE SET updated_at=now()`, user, result.UserID, result.SubscriptionID, snapshot.Plan.ID, order, body["external_id"], !perOrder); e != nil {
 		return e
 	}
 	if _, e = tx.Exec(ctx, "INSERT INTO entitlement_ledger(order_id,customer_id,control_operation) VALUES($1,$2,$3) ON CONFLICT(order_id) DO NOTHING", order, user, result.Operation); e != nil {
@@ -186,13 +212,36 @@ func (a *App) syncAccess(ctx context.Context, user string) error {
 	}
 	// External ID remains authoritative if a grant succeeded remotely but its
 	// response was lost before the local account mapping could be persisted.
-	err := a.control(ctx, "PUT", "commerce/accounts/"+user+"/state", map[string]any{"external_id": "portal:" + user, "enabled": status == "active"}, nil)
-	var p Problem
-	if errors.As(err, &p) && p.Status == 404 {
-		return nil
+	rows, e := a.DB.Query(ctx, `SELECT external_id FROM service_accounts WHERE customer_id=$1 UNION SELECT 'portal:'||id FROM orders WHERE customer_id=$1 AND state='paid' UNION SELECT 'portal:'||$1::text WHERE NOT EXISTS(SELECT 1 FROM service_migrations WHERE customer_id=$1 AND state='applied')`, user)
+	if e != nil {
+		return e
 	}
-	return err
+	external := []string{}
+	for rows.Next() {
+		var id string
+		if e = rows.Scan(&id); e != nil {
+			rows.Close()
+			return e
+		}
+		external = append(external, id)
+	}
+	rows.Close()
+	if e = rows.Err(); e != nil {
+		return e
+	}
+	for _, id := range external {
+		err := a.control(ctx, "PUT", "commerce/accounts/"+strings.TrimPrefix(id, "portal:")+"/state", map[string]any{"external_id": id, "enabled": status == "active"}, nil)
+		var p Problem
+		if errors.As(err, &p) && p.Status == 404 {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
+
 func (a *App) sendJobMail(ctx context.Context, payload []byte) error {
 	var p map[string]string
 	if e := a.unseal(payload, &p); e != nil {

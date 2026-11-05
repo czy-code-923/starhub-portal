@@ -56,7 +56,7 @@ func (a *App) SeedDemoPlans(r *http.Request) (int, error) {
 		for pi, p := range cat.Plans {
 			id := hash("starhub-portal-demo-plan/" + p.Name)[:32]
 			prices := []Price{{ID: "MONTH", Months: 1, Amount: int64(p.Price), Enabled: true}, {ID: "QUARTER", Months: 3, Amount: int64(p.Price * 27 / 10), Enabled: true}, {ID: "YEAR", Months: 12, Amount: int64(p.Price * 10), Enabled: true}}
-			tag, err := tx.Exec(ctx, `INSERT INTO plans(id,category_id,name,description,enabled,recommended,sort,starts_at,ends_at,recommend_starts_at,recommend_ends_at,quota_bytes,group_ids,protocols,prices,max_devices,billing_mode,multiplier_milli,allow_new,allow_renew,simulation) VALUES($1,$2,$3,$4,true,$5,$6,$7,$8,$7,$8,$9,'[]',$10,$11,$12,'both',1000,true,true,true) ON CONFLICT(id) DO NOTHING`, id, category, p.Name, "模拟展示套餐；请编辑绑定可计费用户组、确认价格后关闭模拟标记再售卖。", ci == 1, (ci+1)*10+pi, now.Add(-time.Hour), end, int64(p.GB)*1000000000, raw([]string{"anytls", "hysteria2"}), raw(prices), p.Devices)
+			tag, err := tx.Exec(ctx, `INSERT INTO plans(id,category_id,name,description,enabled,recommended,sort,starts_at,ends_at,recommend_starts_at,recommend_ends_at,quota_bytes,group_ids,protocols,prices,max_devices,billing_mode,multiplier_milli,allow_new,allow_renew,simulation,quota_unit) VALUES($1,$2,$3,$4,true,$5,$6,$7,$8,$7,$8,$9,'[]',$10,$11,$12,'both',1000,true,true,true,'GiB') ON CONFLICT(id) DO NOTHING`, id, category, p.Name, "模拟展示套餐；请编辑绑定可计费用户组、确认价格后关闭模拟标记再售卖。", ci == 1, (ci+1)*10+pi, now.Add(-time.Hour), end, int64(p.GB)*1073741824, raw([]string{"anytls", "hysteria2"}), raw(prices), p.Devices)
 			if err != nil {
 				return 0, err
 			}

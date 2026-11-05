@@ -29,6 +29,7 @@ import urllib.request
 import zipfile
 
 REPO = 'czy-code-923/starhub-portal'
+MINIMUM_CONTROL = (0,25,0)
 VERSION = re.compile(r'^v?[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}$')
 MARKER = 'starhub-portal-v1'
 DEFAULT_ROOT = Path(os.environ.get('ProgramData', r'C:\ProgramData')) / 'StarhubPortal' if os.name == 'nt' else Path('/opt/starhub-portal')
@@ -505,6 +506,48 @@ networks:
     raise RuntimeError('Domain gateway queued but end-to-end verification failed. Check DNS, upstream port, existing site mapping and HTTPS origin mode; retry the domain job.')
 
 
+def control_compatibility(root,api=None):
+    # Same-machine root installations already use this private loopback client
+    # for certificate reuse. Only request a verified official panel release;
+    # the existing control-plane updater performs its own integrity checks.
+    if api is None:
+        if not (root/'scripts/domain_bridge.py').exists():return 'external-control'
+        import domain_bridge
+        api=domain_bridge.control_client()
+    if api is None:return 'external-control'
+    current=api('session').get('version','')
+    try:version=tuple(int(x) for x in current.lstrip('v').split('.'))
+    except ValueError:raise ValueError('Unrecognized installed control version') from None
+    if version>=MINIMUM_CONTROL:return 'ready: '+current
+    release=api('panel-release')
+    latest=release.get('latest','')
+    try:available=tuple(int(x) for x in latest.lstrip('v').split('.'))
+    except ValueError:return 'waiting for official compatible release'
+    if available<MINIMUM_CONTROL:return 'waiting for Starhub 0.25.0+'
+    if not release.get('automatic_update'):return 'control updater offline; update Starhub first'
+    try:api('panel-updates',{'current':current,'version':latest},'POST')
+    except RuntimeError as e:
+        if 'HTTP 409' not in str(e):raise
+    return 'compatible control update queued: '+latest
+
+
+def resource_status(root):
+    """Bounded, once-per-minute observations; no containers outside this project."""
+    status={}
+    try:
+        rows=run(['docker','stats','--no-stream','--format','{{json .}}','starhub-portal-app-1','starhub-portal-db-1'],timeout=8).decode().splitlines()
+        for line in rows[:2]:
+            row=json.loads(line);name=row.get('Name','')
+            if name in ('starhub-portal-app-1','starhub-portal-db-1'):
+                status['app_resources' if '-app-' in name else 'db_resources']='RAM '+str(row.get('MemUsage',''))[:60]+' · CPU '+str(row.get('CPUPerc',''))[:20]
+    except Exception:pass
+    try:
+        total,used,free=shutil.disk_usage(root)
+        status['disk_available']=f'{free/(1024**3):.2f} / {total/(1024**3):.2f} GiB'
+    except OSError:pass
+    return status
+
+
 def worker(root):
     # Single process lock avoids two helpers claiming/updating the same installation.
     lock = open(root / 'helper.lock', 'a+')
@@ -518,12 +561,20 @@ def worker(root):
     if (root / 'recovery.json').exists():
         rollback(root, read_json(root / 'recovery.json'))
         (root / 'recovery.json').unlink()
+    last_control_check=0
+    control_state='not checked'
+    resources={}
     while True:
         try:
             if (root / 'pending-report.json').exists():
                 local(root, 'report', read_json(root / 'pending-report.json'))
                 (root / 'pending-report.json').unlink()
-            local(root, 'heartbeat', {'status': {'platform': platform.system(), 'mode': 'official-releases'}})
+            if time.monotonic()-last_control_check>60:
+                try:control_state=control_compatibility(root)
+                except Exception:control_state='control compatibility check pending; inspect local gateway'
+                last_control_check=time.monotonic()
+                resources=resource_status(root)
+            local(root, 'heartbeat', {'status': {'platform': platform.system(), 'mode': 'official-releases','control_compatibility':control_state,**resources}})
             job = local(root, 'claim', {}).get('job')
             if job:
                 report = {'id': job['id'], 'state': 'succeeded', 'detail': ''}

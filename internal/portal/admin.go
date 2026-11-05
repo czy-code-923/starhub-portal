@@ -10,7 +10,7 @@ var couponPattern = regexp.MustCompile(`^[A-Z0-9_-]{4,32}$`)
 var domainPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$`)
 
 func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
-	if kind == "settings" || kind == "version" {
+	if kind == "settings" || kind == "version" || kind == "capacity" || kind == "service-migrations" {
 		if e := requireOwner(r); e != nil {
 			return e
 		}
@@ -27,6 +27,32 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 	}
 	if kind == "version" {
 		return a.updates(w, r)
+	}
+	if kind == "service-migrations" {
+		if r.Method != "GET" {
+			return Problem{405, "method not allowed"}
+		}
+		data, e := jsonRows(r.Context(), a.DB, `SELECT jsonb_build_object('migrations',(SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT customer_id,state,response,created_at,applied_at FROM service_migrations ORDER BY created_at DESC LIMIT 50)x),'services',(SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT s.order_id,s.customer_id,s.control_user_id,s.subscription_id,s.legacy_combined,o.snapshot->'plan'->'quota_bytes' quota_bytes,o.snapshot->'plan'->>'quota_unit' quota_unit FROM service_accounts s JOIN orders o ON o.id=s.order_id ORDER BY s.updated_at DESC LIMIT 100)x))`)
+		if e != nil {
+			return e
+		}
+		send(w, 200, data)
+		return nil
+	}
+	if kind == "capacity" {
+		if r.Method != "GET" {
+			return Problem{405, "method not allowed"}
+		}
+		result, e := a.capacity(r.Context())
+		if e != nil {
+			return e
+		}
+		var registered, services int
+		_ = a.DB.QueryRow(r.Context(), "SELECT (SELECT count(*) FROM customers WHERE role='customer'),(SELECT count(*) FROM service_accounts)").Scan(&registered, &services)
+		result["registered_customers"] = registered
+		result["portal_services"] = services
+		send(w, 200, result)
+		return nil
 	}
 	if kind == "control-groups" {
 		if r.Method != "GET" {
@@ -46,9 +72,9 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 			"coupons":       `SELECT COALESCE(jsonb_agg(c),'[]') FROM coupons c`,
 			"invitations":   `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,prefix,email,enabled,starts_at,ends_at,max_uses,claimed,created_at FROM invitations ORDER BY created_at DESC LIMIT 200)x`,
 			"customers":     `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,email,name,role,status,created_at,email_verified_at FROM customers WHERE role='customer' ORDER BY created_at DESC LIMIT 500)x`,
-			"orders":        `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT o.*,(SELECT m.state FROM manual_payments m WHERE m.order_id=o.id) manual_state,c.email FROM orders o JOIN customers c ON c.id=o.customer_id ORDER BY o.created_at DESC LIMIT 300)x`,
+			"orders":        `SELECT COALESCE(jsonb_agg(to_jsonb(x)-'fulfillment_payload'),'[]') FROM(SELECT o.*,(SELECT m.state FROM manual_payments m WHERE m.order_id=o.id) manual_state,c.email FROM orders o JOIN customers c ON c.id=o.customer_id ORDER BY o.created_at DESC LIMIT 300)x`,
 			"jobs":          `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,kind,subject,state,attempts,available_at,detail,updated_at FROM jobs ORDER BY created_at DESC LIMIT 200)x`,
-			"announcements": `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT * FROM announcements ORDER BY created_at DESC LIMIT 50)x`,
+			"announcements": `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT * FROM announcements ORDER BY pinned DESC,pin_order,created_at DESC,id LIMIT 100)x`,
 			"tickets":       `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT t.*,c.email FROM tickets t JOIN customers c ON c.id=t.customer_id ORDER BY t.created_at DESC LIMIT 200)x`,
 			"audit":         `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT * FROM audit ORDER BY id DESC LIMIT 300)x`}
 		q, ok := queries[kind]
@@ -64,6 +90,13 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 	}
 	if r.Method == "DELETE" {
 		return bad("请使用停用或下架操作，历史订单与审计保留")
+	}
+	if kind == "plans" {
+		var err error
+		r, err = a.withControlSecrets(r)
+		if err != nil {
+			return err
+		}
 	}
 	tx, e := a.DB.Begin(r.Context())
 	if e != nil {
@@ -110,6 +143,19 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 		if strings.TrimSpace(b.Name) == "" || !cleanText(b.Name, 80) || !cleanText(b.Description, 2000) || b.CategoryID == "" || b.Quota < 1 || b.Quota > 9000000000000000 || (!b.Simulation && (len(b.Groups) < 1 || len(b.Protocols) < 1)) || len(b.Groups) > 8 || len(b.Protocols) > 32 || len(b.Prices) < 1 || len(b.Prices) > 12 || b.MaxDevices < 0 || b.MaxDevices > 20 || b.Multiplier < 1 || b.Multiplier > 100000 || !includes([]string{"both", "uplink", "downlink", "max"}, b.Billing) || !b.Ends.After(b.Starts) || !b.RecommendEnds.After(b.RecommendStarts) || b.Stock < 0 {
 			return bad("套餐参数无效，请检查额度、价格、销售期与用户组")
 		}
+		if len(b.DisplayFeatures) > 12 {
+			return bad("套餐展示信息最多 12 条")
+		}
+		for i, f := range b.DisplayFeatures {
+			b.DisplayFeatures[i].Label = strings.TrimSpace(f.Label)
+			b.DisplayFeatures[i].Value = strings.TrimSpace(f.Value)
+			if b.DisplayFeatures[i].Label == "" || b.DisplayFeatures[i].Value == "" || !cleanText(f.Label, 24) || !cleanText(f.Value, 160) {
+				return bad("展示信息需要名称与内容，名称不超过 24 字，内容不超过 160 字")
+			}
+		}
+		if b.DisplayFeatures == nil {
+			b.DisplayFeatures = []PlanFeature{}
+		}
 		seen := map[string]bool{}
 		for _, p := range b.Prices {
 			if !couponPattern.MatchString(p.ID) || p.Months < 1 || p.Months > 12 || p.Amount < 1 || p.Amount > 100000000 || seen[p.ID] {
@@ -122,12 +168,18 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 				return e
 			}
 		}
+		if b.QuotaUnit == "" {
+			b.QuotaUnit = "GB"
+		}
+		if !includes([]string{"GB", "GiB"}, b.QuotaUnit) {
+			return bad("无效流量单位")
+		}
 		id = b.ID
 		if id == "" {
 			id = ID()
-			_, e = tx.Exec(r.Context(), `INSERT INTO plans(id,category_id,name,description,enabled,recommended,sort,starts_at,ends_at,recommend_starts_at,recommend_ends_at,quota_bytes,group_ids,protocols,prices,max_devices,billing_mode,multiplier_milli,stock,allow_new,allow_renew,simulation) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`, id, b.CategoryID, b.Name, b.Description, b.Enabled, b.Recommended, b.Sort, b.Starts, b.Ends, b.RecommendStarts, b.RecommendEnds, b.Quota, raw(b.Groups), raw(b.Protocols), raw(b.Prices), b.MaxDevices, b.Billing, b.Multiplier, b.Stock, b.AllowNew, b.AllowRenew, b.Simulation)
+			_, e = tx.Exec(r.Context(), `INSERT INTO plans(id,category_id,name,description,enabled,recommended,sort,starts_at,ends_at,recommend_starts_at,recommend_ends_at,quota_bytes,group_ids,protocols,prices,max_devices,billing_mode,multiplier_milli,stock,allow_new,allow_renew,simulation,quota_unit,display_features) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`, id, b.CategoryID, b.Name, b.Description, b.Enabled, b.Recommended, b.Sort, b.Starts, b.Ends, b.RecommendStarts, b.RecommendEnds, b.Quota, raw(b.Groups), raw(b.Protocols), raw(b.Prices), b.MaxDevices, b.Billing, b.Multiplier, b.Stock, b.AllowNew, b.AllowRenew, b.Simulation, b.QuotaUnit, raw(b.DisplayFeatures))
 		} else {
-			tag, err := tx.Exec(r.Context(), `UPDATE plans SET category_id=$3,name=$4,description=$5,enabled=$6,recommended=$7,sort=$8,starts_at=$9,ends_at=$10,recommend_starts_at=$11,recommend_ends_at=$12,quota_bytes=$13,group_ids=$14,protocols=$15,prices=$16,max_devices=$17,billing_mode=$18,multiplier_milli=$19,stock=$20,allow_new=$21,allow_renew=$22,simulation=$23,version=version+1 WHERE id=$1 AND version=$2`, id, b.Version, b.CategoryID, b.Name, b.Description, b.Enabled, b.Recommended, b.Sort, b.Starts, b.Ends, b.RecommendStarts, b.RecommendEnds, b.Quota, raw(b.Groups), raw(b.Protocols), raw(b.Prices), b.MaxDevices, b.Billing, b.Multiplier, b.Stock, b.AllowNew, b.AllowRenew, b.Simulation)
+			tag, err := tx.Exec(r.Context(), `UPDATE plans SET category_id=$3,name=$4,description=$5,enabled=$6,recommended=$7,sort=$8,starts_at=$9,ends_at=$10,recommend_starts_at=$11,recommend_ends_at=$12,quota_bytes=$13,group_ids=$14,protocols=$15,prices=$16,max_devices=$17,billing_mode=$18,multiplier_milli=$19,stock=$20,allow_new=$21,allow_renew=$22,simulation=$23,quota_unit=$24,display_features=$25,version=version+1 WHERE id=$1 AND version=$2`, id, b.Version, b.CategoryID, b.Name, b.Description, b.Enabled, b.Recommended, b.Sort, b.Starts, b.Ends, b.RecommendStarts, b.RecommendEnds, b.Quota, raw(b.Groups), raw(b.Protocols), raw(b.Prices), b.MaxDevices, b.Billing, b.Multiplier, b.Stock, b.AllowNew, b.AllowRenew, b.Simulation, b.QuotaUnit, raw(b.DisplayFeatures))
 			e = err
 			if e == nil && tag.RowsAffected() != 1 {
 				return Problem{409, "套餐已变化，请刷新"}
@@ -187,26 +239,28 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 			return e
 		}
 		id = b.ID
-		_, e = tx.Exec(r.Context(), "UPDATE jobs SET state='queued',available_at=now(),detail='' WHERE id=$1 AND state='failed' AND kind IN ('fulfill','mail','access')", id)
+		_, e = tx.Exec(r.Context(), "UPDATE jobs SET state='queued',available_at=now(),detail='' WHERE id=$1 AND state='failed' AND kind IN ('fulfill','mail','access','migrate')", id)
 	case "announcements":
 		var b struct {
-			ID      string `json:"id"`
-			Title   string `json:"title"`
-			Body    string `json:"body"`
-			Enabled bool   `json:"enabled"`
+			ID       string `json:"id"`
+			Title    string `json:"title"`
+			Pinned   bool   `json:"pinned"`
+			PinOrder int    `json:"pin_order"`
+			Body     string `json:"body"`
+			Enabled  bool   `json:"enabled"`
 		}
 		if e = decode(w, r, &b); e != nil {
 			return e
 		}
-		if strings.TrimSpace(b.Title) == "" || !cleanText(b.Title, 100) || !cleanText(b.Body, 12000) {
+		if b.PinOrder < -100000 || b.PinOrder > 100000 || strings.TrimSpace(b.Title) == "" || !cleanText(b.Title, 100) || !cleanText(b.Body, 12000) {
 			return bad("公告内容无效")
 		}
 		id = b.ID
 		if id == "" {
 			id = ID()
-			_, e = tx.Exec(r.Context(), "INSERT INTO announcements(id,title,body,enabled) VALUES($1,$2,$3,$4)", id, b.Title, b.Body, b.Enabled)
+			_, e = tx.Exec(r.Context(), "INSERT INTO announcements(id,title,body,enabled,pinned,pin_order) VALUES($1,$2,$3,$4,$5,$6)", id, b.Title, b.Body, b.Enabled, b.Pinned, b.PinOrder)
 		} else {
-			_, e = tx.Exec(r.Context(), "UPDATE announcements SET title=$2,body=$3,enabled=$4 WHERE id=$1", id, b.Title, b.Body, b.Enabled)
+			_, e = tx.Exec(r.Context(), "UPDATE announcements SET title=$2,body=$3,enabled=$4,pinned=$5,pin_order=$6 WHERE id=$1", id, b.Title, b.Body, b.Enabled, b.Pinned, b.PinOrder)
 		}
 	default:
 		return Problem{405, "该资源仅支持查询"}

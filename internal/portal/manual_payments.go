@@ -2,6 +2,7 @@ package portal
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -350,101 +351,119 @@ func (a *App) reviewPayments(w http.ResponseWriter, r *http.Request) error {
 		}
 		return nil
 	}
-	var b struct {
-		Decision  string    `json:"decision"`
-		Version   int       `json:"version"`
-		Reference string    `json:"verified_reference"`
-		Amount    int64     `json:"received_amount"`
-		At        time.Time `json:"received_at"`
-		Note      string    `json:"note"`
-		Confirmed bool      `json:"confirmed"`
-	}
+	var b manualReview
 	if e := decode(w, r, &b); e != nil {
 		return e
 	}
-	b.Reference = strings.ToUpper(strings.TrimSpace(b.Reference))
-	if !includes([]string{"approve", "reject"}, b.Decision) || !cleanText(b.Note, 1000) {
-		return bad("审核参数无效")
-	}
-	if b.Decision == "approve" && (!b.Confirmed || !transferReference.MatchString(b.Reference) || b.At.IsZero() || b.At.After(a.now().Add(5*time.Minute))) {
-		return bad("请核对真实到账记录并填写有效流水号、实收金额与时间")
-	}
-	if b.Decision == "reject" && strings.TrimSpace(b.Note) == "" {
-		return bad("请填写驳回原因")
-	}
-	tx, e := a.DB.Begin(ctx)
+	message, e := a.reviewManual(ctx, current(r), id, b)
 	if e != nil {
 		return e
 	}
+	send(w, 200, map[string]string{"message": message})
+	return nil
+}
+
+type manualReview struct {
+	Decision  string    `json:"decision"`
+	Version   int       `json:"version"`
+	Reference string    `json:"verified_reference"`
+	Amount    int64     `json:"received_amount"`
+	At        time.Time `json:"received_at"`
+	Note      string    `json:"note"`
+	Confirmed bool      `json:"confirmed"`
+}
+
+func (a *App) reviewManual(ctx context.Context, reviewer actor, id string, b manualReview) (string, error) {
+	if !reviewer.can("payments") {
+		return "", Problem{403, "没有核款权限"}
+	}
+	b.Reference = strings.ToUpper(strings.TrimSpace(b.Reference))
+	if !includes([]string{"approve", "reject"}, b.Decision) || !cleanText(b.Note, 1000) {
+		return "", bad("审核参数无效")
+	}
+	if b.Decision == "approve" && (!b.Confirmed || b.At.IsZero() || b.At.After(a.now().Add(5*time.Minute))) {
+		return "", bad("请核实真实到账金额、时间，并勾选确认")
+	}
+	if b.Decision == "reject" && strings.TrimSpace(b.Note) == "" {
+		return "", bad("请填写驳回原因")
+	}
+	tx, e := a.DB.Begin(ctx)
+	if e != nil {
+		return "", e
+	}
 	defer tx.Rollback(ctx)
 	if e = lock(ctx, tx); e != nil {
-		return e
+		return "", e
 	}
 	var order, user, state, orderState, verified, provider, method string
 	var version int
 	var amount int64
 	var expiry, created, deadline time.Time
 	if e = tx.QueryRow(ctx, `SELECT m.order_id,o.customer_id,m.state,m.version,o.payable,o.state,o.expires_at,o.created_at,m.review_deadline,COALESCE(m.verified_reference,''),m.provider,m.method_id FROM manual_payments m JOIN orders o ON o.id=m.order_id WHERE m.id=$1 FOR UPDATE OF m,o`, id).Scan(&order, &user, &state, &version, &amount, &orderState, &expiry, &created, &deadline, &verified, &provider, &method); e != nil {
-		return e
+		return "", e
 	}
-	if user == current(r).ID {
-		return Problem{403, "不能审核自己提交的付款，请由其他有权限的管理员处理"}
+	if b.Decision == "approve" {
+		if method == "alipay_redpacket" && b.Reference == "" {
+			b.Reference = "REDPACK-" + hash(order)[:32]
+		}
+		if !transferReference.MatchString(b.Reference) {
+			return "", bad("静态收款码核验需填写有效交易流水；口令红包可留空")
+		}
+	}
+	if user == reviewer.ID {
+		return "", Problem{403, "不能审核自己提交的付款，请由其他有权限的管理员处理"}
 	}
 	if state == "approved" && b.Decision == "approve" && verified == b.Reference && amount == b.Amount {
-		send(w, 200, map[string]string{"message": "该付款已确认，不会重复开通"})
-		return nil
+		return "该付款已确认，不会重复开通", nil
 	}
 	if version != b.Version || state != "submitted" || orderState != "pending" || !deadline.After(a.now()) {
-		return Problem{409, "付款状态已变化、未提交凭证或审核期已过，请刷新核对"}
+		return "", Problem{409, "付款状态已变化、未提交凭证或审核期已过，请刷新核对"}
 	}
 	if b.Decision == "reject" {
-		_, e = tx.Exec(ctx, "UPDATE manual_payments SET state='rejected',review_note=$2,reviewed_by=$3,reviewed_at=now(),version=version+1 WHERE id=$1", id, b.Note, current(r).ID)
+		_, e = tx.Exec(ctx, "UPDATE manual_payments SET state='rejected',review_note=$2,reviewed_by=$3,reviewed_at=now(),version=version+1 WHERE id=$1", id, b.Note, reviewer.ID)
 	} else {
 		var usedOnline bool
 		if provider == "alipay" {
 			if e = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE UPPER(trade_no)=$1 AND state='paid')", b.Reference).Scan(&usedOnline); e != nil {
-				return e
+				return "", e
 			}
 			if usedOnline {
-				return Problem{409, "此交易流水已用于在线支付订单"}
+				return "", Problem{409, "此交易流水已用于在线支付订单"}
 			}
 		}
 		if b.Amount != amount {
-			return bad("实收金额必须与订单优惠后应付金额一致")
+			return "", bad("实收金额必须与订单优惠后应付金额一致")
 		}
 		paymentEnd := expiry
 		if method == "alipay_redpacket" {
 			paymentEnd = deadline
 		}
 		if !b.At.Before(paymentEnd) || b.At.Before(created.Add(-time.Minute)) {
-			return bad("到账时间不在本订单付款/核验窗口内，不能直接开通，请人工处理退款或新订单")
+			return "", bad("到账时间不在本订单付款/核验窗口内，不能直接开通，请人工处理退款或新订单")
 		}
-		_, e = tx.Exec(ctx, `UPDATE manual_payments SET state='approved',verified_reference=$2,received_amount=$3,received_at=$4,review_note=$5,reviewed_by=$6,reviewed_at=now(),version=version+1 WHERE id=$1`, id, b.Reference, b.Amount, b.At, b.Note, current(r).ID)
+		_, e = tx.Exec(ctx, `UPDATE manual_payments SET state='approved',verified_reference=$2,received_amount=$3,received_at=$4,review_note=$5,reviewed_by=$6,reviewed_at=now(),version=version+1 WHERE id=$1`, id, b.Reference, b.Amount, b.At, b.Note, reviewer.ID)
 		if e != nil {
-			return e
+			return "", e
 		}
 		if _, e = tx.Exec(ctx, "UPDATE orders SET state='paid',paid_at=$2,fulfillment='queued' WHERE id=$1", order, b.At); e != nil {
-			return e
+			return "", e
 		}
 		_, e = tx.Exec(ctx, "INSERT INTO jobs(id,kind,subject) VALUES($1,'fulfill',$2) ON CONFLICT(kind,subject) DO NOTHING", ID(), order)
 	}
 	if e != nil {
-		return e
+		return "", e
 	}
 	if e = queueTelegram(ctx, tx, "review:"+id+":"+fmt.Sprint(version+1), order, "payment."+b.Decision); e != nil {
-		return e
+		return "", e
 	}
-	if e = audit(ctx, tx, current(r).ID, "manual-payment."+b.Decision, id); e != nil {
-		return e
+	if e = audit(ctx, tx, reviewer.ID, "manual-payment."+b.Decision, id); e != nil {
+		return "", e
 	}
 	if e = tx.Commit(ctx); e != nil {
-		return e
+		return "", e
 	}
-	send(w, 200, map[string]string{"message": func() string {
-		if b.Decision == "approve" {
-			return "到账已核实，已排队开通；重复提交不会重复发放权益"
-		}
-		return "已驳回，用户可在付款窗口内补充凭证"
-	}()})
-	return nil
+	if b.Decision == "approve" {
+		return "到账已核实，已排队开通；重复提交不会重复发放权益", nil
+	}
+	return "已驳回，用户可在付款窗口内补充凭证", nil
 }

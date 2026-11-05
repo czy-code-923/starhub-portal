@@ -274,3 +274,66 @@ func TestGatewayRetryAndExplicitIPOrigin(t *testing.T) {
 	expect(t, f.req("POST", "admin/gateway/retry", map[string]any{}, &f.admin, true), 200)
 	expect(t, f.req("POST", "admin/gateway/retry", map[string]any{}, &f.admin, true), 409)
 }
+
+func TestTelegramRedpacketApprovalRequiresFreshAdminAndOneTimeConfirmation(t *testing.T) {
+	f, plan, _ := setupManual(t)
+	enableRedpacket(t, f)
+	ctx := context.Background()
+	order, id := beginRedpacket(t, f, plan, &f.customer)
+	expect(t, f.req("POST", "orders/"+order+"/receipt", map[string]any{"version": 1, "redpacket_password": "fixture-only-passcode-7261"}, &f.customer, true), 200)
+	p := tgPrincipal{UserID: 42, Scopes: []string{"payments", "redpacket", "approve"}, Administrator: f.admin.ID}
+	configureTGTest(t, f, []tgPrincipal{p}, "polling")
+	replies := []string{}
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		json.NewDecoder(r.Body).Decode(&b)
+		if text, ok := b["text"].(string); ok {
+			replies = append(replies, text)
+		}
+		send(w, 200, map[string]any{"ok": true, "result": map[string]any{}})
+	}))
+	defer mock.Close()
+	f.a.TestTelegramURL = mock.URL
+	if e := f.a.tgCallback(ctx, 42, 42, "review-1", "review:"+order); e != nil {
+		t.Fatal(e)
+	}
+	var nonce, state string
+	f.a.DB.QueryRow(ctx, "SELECT id FROM telegram_confirmations WHERE payment_id=$1", id).Scan(&nonce)
+	if nonce == "" {
+		t.Fatal("no confirmation nonce")
+	}
+	f.a.DB.QueryRow(ctx, "SELECT state FROM orders WHERE id=$1", order).Scan(&state)
+	if state != "pending" {
+		t.Fatal("review immediately paid order")
+	}
+	if e := f.a.tgCallback(ctx, 43, 43, "other-user", "confirm:"+nonce); e != nil {
+		t.Fatal(e)
+	}
+	f.a.DB.Exec(ctx, "UPDATE customers SET status='disabled' WHERE id=$1", f.admin.ID)
+	if e := f.a.tgCallback(ctx, 42, 42, "revoked", "confirm:"+nonce); e != nil {
+		t.Fatal(e)
+	}
+	f.a.DB.QueryRow(ctx, "SELECT state FROM orders WHERE id=$1", order).Scan(&state)
+	if state != "pending" {
+		t.Fatal("revoked admin approved")
+	}
+	f.a.DB.Exec(ctx, "UPDATE customers SET status='active' WHERE id=$1", f.admin.ID)
+	if e := f.a.tgCallback(ctx, 42, 42, "confirm-1", "confirm:"+nonce); e != nil {
+		t.Fatal(e)
+	}
+	if e := f.a.tgCallback(ctx, 42, 42, "replay", "confirm:"+nonce); e != nil {
+		t.Fatal(e)
+	}
+	f.a.DB.QueryRow(ctx, "SELECT state FROM orders WHERE id=$1", order).Scan(&state)
+	if state != "paid" {
+		t.Fatal("authorized confirm not paid", replies)
+	}
+	var jobs int
+	f.a.DB.QueryRow(ctx, "SELECT count(*) FROM jobs WHERE kind='fulfill' AND subject=$1", order).Scan(&jobs)
+	if jobs != 1 {
+		t.Fatal("replay queued duplicate", jobs)
+	}
+	if !strings.Contains(strings.Join(replies, "\n"), "已使用或已过期") {
+		t.Fatal("nonce replay not rejected")
+	}
+}

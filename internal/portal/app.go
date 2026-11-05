@@ -27,7 +27,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const Version = "0.3.2"
+const Version = "0.4.0"
 const Repository = "czy-code-923/starhub-portal"
 
 //go:embed migrations/*.sql
@@ -354,6 +354,7 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("POST /portal/v1/orders/{id}/payment", a.auth(a.pay, false))
 	m.HandleFunc("POST /portal/v1/payments/alipay/notify", wrap(a.alipayNotify))
 	m.HandleFunc("GET /portal/v1/me/service", a.auth(a.service, false))
+	m.HandleFunc("GET /portal/v1/me/services", a.auth(a.services, false))
 	m.HandleFunc("GET /portal/v1/me/subscription/{view}", a.auth(a.subscription, false))
 	m.HandleFunc("GET /portal/v1/me/devices", a.auth(a.devices, false))
 	m.HandleFunc("GET /portal/v1/clients", a.auth(a.clients, false))
@@ -361,7 +362,7 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("POST /portal/v1/tickets", a.auth(a.tickets, false))
 	m.HandleFunc("GET /portal/v1/tickets/{id}", a.auth(a.ticket, false))
 	m.HandleFunc("POST /portal/v1/tickets/{id}", a.auth(a.ticket, false))
-	for _, path := range []string{"settings", "categories", "plans", "coupons", "invitations", "customers", "orders", "jobs", "announcements", "tickets", "audit", "control-groups", "version"} {
+	for _, path := range []string{"settings", "categories", "plans", "coupons", "invitations", "customers", "orders", "jobs", "announcements", "tickets", "audit", "control-groups", "version", "capacity", "service-migrations"} {
 		p := path
 		for _, method := range []string{"GET", "POST", "PUT", "DELETE"} {
 			m.HandleFunc(method+" /portal/v1/admin/"+p, a.auth(func(w http.ResponseWriter, r *http.Request) error { return a.admin(w, r, p) }, true))
