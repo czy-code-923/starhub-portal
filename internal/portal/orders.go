@@ -51,12 +51,13 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 	r = r.WithContext(context.WithValue(r.Context(), controlSecretKey{}, secret))
+	healthErr := a.refreshServiceStates(r.Context())
 	groupMetadata, groupErr := a.commercialGroups(r.Context(), false)
 	cats, e := jsonRows(r.Context(), a.DB, "SELECT COALESCE(jsonb_agg(c ORDER BY c.sort,c.name),'[]') FROM categories c WHERE enabled")
 	if e != nil {
 		return e
 	}
-	rows, e := a.DB.Query(r.Context(), `SELECT to_jsonb(p),(SELECT count(*) FROM orders o WHERE o.plan_id=p.id AND o.state IN ('pending','paid','refund_pending')) FROM plans p JOIN categories c ON c.id=p.category_id WHERE p.deleted_at IS NULL AND p.enabled AND c.enabled AND p.starts_at<=$1 AND p.ends_at>$1 ORDER BY p.sort,p.name LIMIT 100`, a.now())
+	rows, e := a.DB.Query(r.Context(), `SELECT to_jsonb(p),(SELECT count(*) FROM portal_effective_seats(p.id,$1)) FROM plans p JOIN categories c ON c.id=p.category_id WHERE p.deleted_at IS NULL AND p.enabled AND c.enabled AND p.starts_at<=$1 AND p.ends_at>$1 ORDER BY p.sort,p.name LIMIT 100`, a.now())
 	if e != nil {
 		return e
 	}
@@ -82,15 +83,16 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request) error {
 		if p.Stock > 0 {
 			remaining = max(0, p.Stock-stockUsed)
 		}
-		plans = append(plans, map[string]any{"stock_limit": p.Stock, "remaining_stock": remaining, "sold_out": p.Stock > 0 && stockUsed >= p.Stock, "id": p.ID, "category_id": p.CategoryID, "name": p.Name, "description": p.Description, "recommended": p.Recommended && !a.now().Before(p.RecommendStarts) && a.now().Before(p.RecommendEnds), "quota_bytes": p.Quota, "quota_unit": p.QuotaUnit, "display_features": p.DisplayFeatures, "prices": prices, "protocols": selectedProtocols(groupMetadata, p.Groups, p.Protocols), "protocols_verified": groupErr == nil, "max_devices": p.MaxDevices, "allow_new": p.AllowNew, "allow_renew": p.AllowRenew, "simulation": p.Simulation})
+		plans = append(plans, map[string]any{"effective_members": stockUsed, "stock_limit": p.Stock, "remaining_stock": remaining, "sold_out": p.Stock > 0 && stockUsed >= p.Stock, "id": p.ID, "category_id": p.CategoryID, "name": p.Name, "description": p.Description, "recommended": p.Recommended && !a.now().Before(p.RecommendStarts) && a.now().Before(p.RecommendEnds), "quota_bytes": p.Quota, "quota_unit": p.QuotaUnit, "display_features": p.DisplayFeatures, "prices": prices, "protocols": selectedProtocols(groupMetadata, p.Groups, p.Protocols), "protocols_verified": groupErr == nil, "max_devices": p.MaxDevices, "allow_new": p.AllowNew, "allow_renew": p.AllowRenew, "simulation": p.Simulation})
 	}
 	if e = rows.Err(); e != nil {
 		return e
 	}
-	send(w, 200, map[string]any{"categories": cats, "plans": plans, "stock_checked_at": a.now()})
+	send(w, 200, map[string]any{"categories": cats, "plans": plans, "stock_checked_at": a.now(), "stock_synced": healthErr == nil})
 	return nil
 }
 func (a *App) calculate(r *http.Request, tx pgx.Tx, b Buy) (Quote, error) {
+	r = r.WithContext(context.WithValue(r.Context(), transactionKey{}, tx))
 	q := Quote{}
 	var data json.RawMessage
 	e := tx.QueryRow(r.Context(), `SELECT to_jsonb(p) FROM plans p JOIN categories c ON c.id=p.category_id WHERE p.id=$1 AND p.deleted_at IS NULL AND p.enabled AND c.enabled AND p.starts_at<=$2 AND p.ends_at>$2`, b.PlanID, a.now()).Scan(&data)
@@ -147,13 +149,21 @@ func (a *App) calculate(r *http.Request, tx pgx.Tx, b Buy) (Quote, error) {
 			return q, e
 		}
 	}
-	if p.Stock > 0 {
+	needsSeat := true
+	if b.RenewalOf != "" {
+		var held bool
+		if e = tx.QueryRow(r.Context(), "SELECT EXISTS(SELECT 1 FROM portal_effective_seats($1,$2) WHERE service_id=$3)", p.ID, a.now(), b.RenewalOf).Scan(&held); e != nil {
+			return q, e
+		}
+		needsSeat = !held
+	}
+	if p.Stock > 0 && needsSeat {
 		var used int
-		if e = tx.QueryRow(r.Context(), inventoryCountSQL, p.ID).Scan(&used); e != nil {
+		if e = tx.QueryRow(r.Context(), inventoryCountSQL, p.ID, a.now()).Scan(&used); e != nil {
 			return q, e
 		}
 		if used >= p.Stock {
-			return q, Problem{409, "套餐销售名额已满，新购与续费均需剩余名额"}
+			return q, Problem{409, "套餐有效人数已达上限，新购或过期后重新开通需要剩余名额"}
 		}
 	}
 	q.Base = q.Price.Amount
@@ -224,6 +234,9 @@ func (a *App) quote(w http.ResponseWriter, r *http.Request) error {
 	if e := decode(w, r, &b); e != nil {
 		return e
 	}
+	if e := a.refreshServiceStates(r.Context(), true); e != nil {
+		return e
+	}
 	tx, e := a.DB.Begin(r.Context())
 	if e != nil {
 		return e
@@ -251,6 +264,9 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) error {
 	}
 	if len(b.Key) < 16 || len(b.Key) > 100 {
 		return bad("缺少有效订单幂等键")
+	}
+	if e := a.refreshServiceStates(r.Context(), true); e != nil {
+		return e
 	}
 	tx, e := a.DB.Begin(r.Context())
 	if e != nil {

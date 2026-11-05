@@ -55,7 +55,7 @@ Telegram approve 现在同时支持口令红包与 alipay_static / wechat_static
 `GET /admin/record-retention?kind=jobs|audit` 需对应 jobs/audit 权限，返回固定保留策略、条数和 can_clear。`POST` 同路径仅主管理员可执行，需 CSRF 和 `{confirmed:true}`；audit 清空后留下此次清理标记，jobs 仅删除 succeeded / rolled_back。工作中和待重试任务、财务与幂等凭据不可通过此接口删除。
 
 
-0.7.0：`GET /catalog` 增加每套餐 `stock_limit`、`remaining_stock`、`sold_out` 及响应 `stock_checked_at`；不限名额时 remaining_stock=null。0.8.0 起新购和续费的 pending / paid / refund_pending 均占用 1 个名额；取消未付款订单释放，隐藏订阅记录不释放。可见套餐页每 10 秒刷新，创建订单在数据库事务锁中复核余量。
+0.7.0：`GET /catalog` 增加每套餐 `stock_limit`、`remaining_stock`、`sold_out` 及响应 `stock_checked_at`；不限名额时 remaining_stock=null。0.9.0 起按有效独立身份去重计算；有效期内续费不重复占用，过期或删除释放；新购和过期后续费 pending/已付待开通预占空位；取消未付款订单释放，隐藏订阅记录不释放。可见套餐页每 10 秒刷新，创建订单在数据库事务锁中复核余量。
 
 `GET /me/renewal?service=<原订阅订单ID>` 返回可用续费价格、服务状态、注意事项和已有待处理续费订单，仅本用户可读。`POST /checkout/quote` 与 `POST /orders` 可加 `renewal_of=<原服务订单ID>`：须同套餐且允许续费，优惠码规则沿用结算服务；同一订阅只允许一个待支付 / 待生效续费。订单列表和详情增加 renewal_of 和 service_id，客户端应使用 service_id 进入原订阅。幂等键绑定续费目标，不可改为其他订阅或新购。已核验续费通过星枢 0.25.1+ commerce/renewals 延长期限；不会新增 service_accounts 或重新创建已删除身份，清理任务历史后也不会重复续期。续费只延长时长，不改当前额度、用量、权限和重置时间。
 
@@ -65,4 +65,10 @@ Telegram approve 现在同时支持口令红包与 alipay_static / wechat_static
 
 `DELETE /me/services/{id}` 请求 `{confirmed:true}`，只移除本人失效/删除服务的列表记录；有效、状态未知及仍有待处理续费的服务返回 409。`GET /me/services?hidden=1` 分页查询已移除记录；`POST /me/services/{id}/restore` 恢复显示，不恢复代理权限。隐藏后不展示导入链接，订单返回 subscription_hidden=true。
 
-续费截止为星枢原服务 expires_at + 72 小时（严格小于截止时间）。`GET /me/service` 返回 renewal_window_open、renewal_deadline、renewal_unavailable_reason；`GET /me/renewal` 返回截止、remaining_stock 和不可用 reason。报价/下单重新核验原服务、套餐销售余量；每单续费占用同套餐 1 份名额，未付款也预留。订单 expires_at 不超过续费截止；报价返回 renewal_deadline。开始付款、提交凭证、审批及开通均验证截止。期限内实际到账可在之后核验，核验时间不替代实际付款时间；迟到支付宝回调进入 late_paid 人工核账，不自动续期。已核验历史权益不追溯撤销。
+续费截止为星枢原服务 expires_at + 72 小时（严格小于截止时间）。`GET /me/service` 返回 renewal_window_open、renewal_deadline、renewal_unavailable_reason；`GET /me/renewal` 返回截止、remaining_stock 和不可用 reason。报价/下单重新核验原服务、套餐销售余量；同一原订阅的订单按身份去重计数；有效期内续费沿用原名额，过期后重新开通须有空位且待付款预留。订单 expires_at 不超过续费截止；报价返回 renewal_deadline。开始付款、提交凭证、审批及开通均验证截止。期限内实际到账可在之后核验，核验时间不替代实际付款时间；迟到支付宝回调进入 late_paid 人工核账，不自动续期。已核验历史权益不追溯撤销。
+
+0.9.0：`stock` 表示该套餐当前有效独立订阅人数上限（不是历史成交笔数）。有效期内、启用且未删除的身份占名额，用尽流量但未到期仍占用；未同步状态保守保留，查询失败不推断删除。当前有效订阅的续费不重复占位；过期或已删除释放，过期后仍按 72 小时窗口续费并重新预占空位。已删除的身份不能重建原凭据，应新购独立服务。待付款、已付待开通和待退款订单保留必要预占，以原服务 ID 去重。名额校验前强制读取完整远端身份快照，事务中再次去重计数，避免新购与重新开通超卖。
+
+`GET /catalog` 增加 effective_members 和 stock_synced；元数据/人数页面每 10 秒同步，expires_at 依据服务端当前时间即时判断。`GET /me/renewal` 的 requires_seat 表示原身份是否需要重新占位，满额不阻止已有有效身份续费。
+
+管理员修改套餐 group_ids/protocols 时递增独立 policy_revision，并事务性排队 policy 任务。通过星枢 0.25.2+ `PUT /commerce/accounts/{external_id}/policy` 同步各已购身份，body 绑定 user_id、subscription_id、source_id=plan_id 和递增 revision。接口不修改任何会计字段、凭据或有效期。`GET /admin/plans` 增加 effective_members、policy_pending、policy_failed；后台任务支持重试。`GET /me/service` 增加 policy_synced/policy_warning，订阅 check 在权限同步未完成时返回 ready=false 和明确 policy_pending，share 则 503，不伪装成客户端协议不兼容。客户端更新原订阅后取得新授权节点。

@@ -47,3 +47,15 @@ describe('subscription renewal',()=>{
   const request=vi.fn(async(path:string)=>path.startsWith('me/renewal')?{available:true,service:{},plan:{id:'p',name:'Existing',prices:[]},pending_orders:[{id:'pending',state:'pending',payable:1000}],note:'等待核验'}:{id:'pending'});const w=mount(RenewalDialog,{props:{request,service:{id:'a'.repeat(32)}}});await flushPromises();expect(w.find('form').exists()).toBe(false);await w.findAll('button').find(b=>b.text()==='继续付款 / 查看凭证')!.trigger('click');await flushPromises();expect(w.emitted('payment')?.[0]?.[0]).toMatchObject({id:'pending'});w.unmount();
  });
 });
+
+
+describe('effective renewal seats',()=>{
+ it('allows a valid existing identity to renew when the plan is full',async()=>{
+  const request=vi.fn().mockResolvedValue({available:true,requires_seat:false,stock_limit:1,remaining_stock:0,service:{},plan:{id:'p',name:'Full plan',prices:[{id:'MONTH',months:1,amount:500}]},pending_orders:[]});
+  const w=mount(RenewalDialog,{props:{request,service:{id:'a'.repeat(32)}}});await flushPromises();expect(w.find('form').exists()).toBe(true);expect(w.text()).toContain('套餐满额也可续费');w.unmount();
+ });
+ it('blocks an expired identity from reclaiming a seat when the plan is full',async()=>{
+  const request=vi.fn().mockResolvedValue({available:false,requires_seat:true,stock_limit:1,remaining_stock:0,reason:'有效人数已满',service:{state:'expired'},plan:{id:'p',name:'Full plan',prices:[]},pending_orders:[]});
+  const w=mount(RenewalDialog,{props:{request,service:{id:'a'.repeat(32)}}});await flushPromises();expect(w.find('form').exists()).toBe(false);expect(w.text()).toContain('有效人数已满');w.unmount();
+ });
+});

@@ -47,6 +47,7 @@ type Price struct {
 	Enabled bool   `json:"enabled"`
 }
 type Plan struct {
+	PolicyRevision  int           `json:"policy_revision"`
 	DisplayFeatures []PlanFeature `json:"display_features"`
 	Simulation      bool          `json:"simulation"`
 	ID              string        `json:"id"`

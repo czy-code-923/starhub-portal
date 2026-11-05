@@ -8,7 +8,7 @@ import (
 )
 
 const renewalGrace = 72 * time.Hour
-const inventoryCountSQL = "SELECT count(*) FROM orders WHERE plan_id=$1 AND state IN ('pending','paid','refund_pending')"
+const inventoryCountSQL = "SELECT count(*) FROM portal_effective_seats($1,$2)"
 
 func renewalWindow(u map[string]any, now time.Time) (time.Time, error) {
 	state, _ := u["state"].(string)
@@ -27,7 +27,7 @@ func renewalWindow(u map[string]any, now time.Time) (time.Time, error) {
 	return deadline, nil
 }
 
-// Orders reserve a sales slot at creation. Rechecking a reserved invoice must
+// Orders reserve a seat only when the original identity does not already hold one. Rechecking a reserved invoice must
 // not count its own slot as unavailable; only new order creation checks stock.
 func checkRenewalInvoice(ctx context.Context, tx pgx.Tx, order string, at time.Time) error {
 	var renewal string

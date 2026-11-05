@@ -131,9 +131,17 @@ func (a *App) service(w http.ResponseWriter, r *http.Request) error {
 	if e != nil {
 		return e
 	}
+	policyErr := error(nil)
+	if !inactiveService(u["state"].(string)) {
+		policyErr = a.syncServicePolicy(r.Context(), selected.Order)
+	}
 	safe := u
 	var name string
 	_ = a.DB.QueryRow(r.Context(), "SELECT snapshot->'plan'->>'name' FROM orders WHERE id=$1", selected.Order).Scan(&name)
+	safe["policy_synced"] = policyErr == nil
+	if policyErr != nil {
+		safe["policy_warning"] = "套餐节点权限正在同步，请稍后刷新；管理员可查看后台权限同步任务"
+	}
 	safe["plan_name"] = name
 	safe["order_id"] = selected.Order
 	safe["quota_unit"] = selected.Unit
@@ -184,6 +192,13 @@ func (a *App) subscription(w http.ResponseWriter, r *http.Request) error {
 			return nil
 		}
 		return serviceUnavailable(state)
+	}
+	if e = a.syncServicePolicy(r.Context(), selected.Order); e != nil {
+		if view == "check" {
+			send(w, 200, map[string]any{"ready": false, "reason": "套餐节点权限正在同步，请稍后刷新；管理员可查看后台任务", "policy_pending": true})
+			return nil
+		}
+		return Problem{503, "套餐节点权限尚未同步，请稍后刷新或联系管理员"}
 	}
 	client := r.URL.Query().Get("client")
 	if len(client) > 40 || strings.ContainsAny(client, "/\\\r\n&?#") {

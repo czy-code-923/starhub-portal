@@ -28,29 +28,30 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const Version = "0.8.0"
+const Version = "0.9.0"
 const Repository = "czy-code-923/starhub-portal"
 
 //go:embed migrations/*.sql
 var migrations embed.FS
 
 type App struct {
-	IPOrigin        string
-	WorkerToken     string
-	TrustedProxies  []netip.Prefix
-	DB              *pgxpool.Pool
-	Key             []byte
-	Origin, WebDir  string
-	Client          *http.Client
-	Mail            func(context.Context, string, string, string) error
-	Now             func() time.Time
-	TestControlURL  string
-	TestTelegramURL string
-	healthMu        sync.Mutex
-	nextHealthSync  time.Time
-	retentionMu     sync.Mutex
-	nextRetention   time.Time
-	commercialCache groupCache
+	IPOrigin          string
+	WorkerToken       string
+	TrustedProxies    []netip.Prefix
+	DB                *pgxpool.Pool
+	Key               []byte
+	Origin, WebDir    string
+	Client            *http.Client
+	Mail              func(context.Context, string, string, string) error
+	Now               func() time.Time
+	TestControlURL    string
+	TestTelegramURL   string
+	healthMu          sync.Mutex
+	nextHealthSync    time.Time
+	lastHealthSuccess time.Time
+	retentionMu       sync.Mutex
+	nextRetention     time.Time
+	commercialCache   groupCache
 }
 type Problem struct {
 	Status  int

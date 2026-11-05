@@ -143,7 +143,9 @@ func TestRenewalReservesSharedStockUnderConcurrency(t *testing.T) {
 	root := paidService(t, f)
 	var plan string
 	f.a.DB.QueryRow(ctx, "SELECT plan_id FROM service_accounts WHERE order_id=$1", root).Scan(&plan)
-	f.a.DB.Exec(ctx, "UPDATE plans SET stock=2 WHERE id=$1", plan)
+	expired := time.Now().Add(-time.Hour)
+	f.expiry.Store(&expired)
+	f.a.DB.Exec(ctx, "UPDATE plans SET stock=1 WHERE id=$1", plan)
 	var wg sync.WaitGroup
 	codes := make(chan int, 2)
 	wg.Add(2)

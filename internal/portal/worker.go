@@ -42,7 +42,7 @@ func (a *App) WorkOnce(ctx context.Context) error {
 		var payload []byte
 		var attempts int
 		lease := ID()
-		e := a.DB.QueryRow(ctx, `UPDATE jobs SET lease_generation=$1,state='working',attempts=attempts+1,lease_until=now()+interval '2 minutes',updated_at=now() WHERE id=(SELECT id FROM jobs WHERE kind IN ('mail','fulfill','access','migrate') AND ((state='queued' AND available_at<=now()) OR (state='working' AND lease_until<now())) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,kind,subject,payload,attempts`, lease).Scan(&id, &kind, &subject, &payload, &attempts)
+		e := a.DB.QueryRow(ctx, `UPDATE jobs SET lease_generation=$1,state='working',attempts=attempts+1,lease_until=now()+interval '2 minutes',updated_at=now() WHERE id=(SELECT id FROM jobs WHERE kind IN ('mail','fulfill','access','migrate','policy') AND ((state='queued' AND available_at<=now()) OR (state='working' AND lease_until<now())) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,kind,subject,payload,attempts`, lease).Scan(&id, &kind, &subject, &payload, &attempts)
 		if e == pgx.ErrNoRows {
 			return nil
 		}
@@ -50,6 +50,8 @@ func (a *App) WorkOnce(ctx context.Context) error {
 			return e
 		}
 		switch kind {
+		case "policy":
+			e = a.syncPlanPolicy(ctx, subject)
 		case "migrate":
 			e = a.migrateCustomer(ctx, subject)
 		case "fulfill":
@@ -149,18 +151,29 @@ func (a *App) fulfill(ctx context.Context, order string) error {
 		}
 		return Problem{409, "账户未激活或已停用，请管理员处理已付款订单"}
 	}
-	if renewalOf == "" {
-		if e = a.checkGroups(ctx, snapshot.Plan.Groups, snapshot.Plan.Protocols); e != nil {
+	grantGroups, grantProtocols := snapshot.Plan.Groups, snapshot.Plan.Protocols
+	if renewalOf == "" && len(savedPayload) == 0 {
+		var data []byte
+		var current Plan
+		if e = conn.QueryRow(ctx, "SELECT to_jsonb(p) FROM plans p WHERE id=$1", snapshot.Plan.ID).Scan(&data); e != nil {
+			return e
+		}
+		if e = json.Unmarshal(data, &current); e != nil {
+			return e
+		}
+		grantGroups, grantProtocols = current.Groups, current.Protocols
+		if e = a.checkGroups(ctx, grantGroups, grantProtocols); e != nil {
 			return e
 		}
 	}
+
 	var result struct {
 		UserID         string    `json:"user_id"`
 		SubscriptionID string    `json:"subscription_id"`
 		Operation      string    `json:"operation_id"`
 		Expires        time.Time `json:"expires_at"`
 	}
-	body := map[string]any{"external_id": "portal:" + order, "order_id": order, "name": grantName(name, snapshot.Plan.Name, order), "months": snapshot.Price.Months, "quota_bytes": snapshot.Plan.Quota, "group_ids": snapshot.Plan.Groups, "protocols": snapshot.Plan.Protocols, "max_devices": snapshot.Plan.MaxDevices, "billing_mode": snapshot.Plan.Billing, "multiplier_milli": snapshot.Plan.Multiplier}
+	body := map[string]any{"external_id": "portal:" + order, "order_id": order, "name": grantName(name, snapshot.Plan.Name, order), "months": snapshot.Price.Months, "quota_bytes": snapshot.Plan.Quota, "group_ids": grantGroups, "protocols": grantProtocols, "max_devices": snapshot.Plan.MaxDevices, "billing_mode": snapshot.Plan.Billing, "multiplier_milli": snapshot.Plan.Multiplier}
 	if !perOrder {
 		body["external_id"] = "portal:" + user
 		body["name"] = name
@@ -220,6 +233,13 @@ func (a *App) fulfill(ctx context.Context, order string) error {
 			return e
 		}
 		return Problem{409, "账户已停用，已请求撤销代理身份"}
+	}
+	policyRoot := order
+	if renewalOf != "" {
+		policyRoot = renewalOf
+	}
+	if e = a.syncServicePolicy(ctx, policyRoot); e != nil {
+		return e
 	}
 	// Renewal is an authoritative expiry transaction. Quota exhaustion or an
 	// offline node must not turn an already-applied extension into a failed

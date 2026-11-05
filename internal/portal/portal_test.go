@@ -29,6 +29,8 @@ type fixture struct {
 	a                      *App
 	handler                http.Handler
 	ready                  atomic.Bool
+	policies               atomic.Int32
+	lastPolicy             atomic.Pointer[map[string]any]
 	expiry                 atomic.Pointer[time.Time]
 	missing                atomic.Bool
 	grants                 atomic.Int32
@@ -79,6 +81,9 @@ func setup(t *testing.T) *fixture {
 			for rows.Next() {
 				var id string
 				_ = rows.Scan(&id)
+				if f.missing.Load() {
+					continue
+				}
 				items = append(items, map[string]any{"id": id, "enabled": true, "active": true, "expires_at": f.coreExpiry(), "quota_bytes": int64(100000000000), "used_bytes": 0})
 			}
 			rows.Close()
@@ -95,6 +100,12 @@ func setup(t *testing.T) *fixture {
 			send(w, 200, map[string]int{"remaining_identities": 400, "identity_limit": 500, "identities": 100})
 		case r.URL.Path == "/api/v1/commerce/validate":
 			send(w, 200, map[string]any{"ready": f.ready.Load(), "reason": "fixture not ready"})
+		case strings.HasSuffix(r.URL.Path, "/policy"):
+			f.policies.Add(1)
+			var b map[string]any
+			json.NewDecoder(r.Body).Decode(&b)
+			f.lastPolicy.Store(&b)
+			send(w, 200, map[string]any{"saved": true, "revision": b["revision"]})
 		case r.URL.Path == "/api/v1/commerce/renewals":
 			f.renewals.Add(1)
 			var b map[string]any

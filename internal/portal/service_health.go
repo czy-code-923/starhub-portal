@@ -48,7 +48,7 @@ func (a *App) identityState(u map[string]any) (string, error) {
 	return "active", nil
 }
 func (a *App) saveServiceHealth(ctx context.Context, user, state string, u map[string]any, checked time.Time) error {
-	_, e := a.DB.Exec(ctx, `UPDATE service_accounts SET remote_state=$2,remote_summary=$3,remote_checked_at=$4 WHERE control_user_id=$1 AND (remote_checked_at IS NULL OR remote_checked_at<=$4)`, user, state, raw(serviceSummary(u)), checked)
+	_, e := a.rowQueries(ctx).Exec(ctx, `UPDATE service_accounts SET remote_state=$2,remote_summary=$3,remote_checked_at=$4 WHERE control_user_id=$1 AND (remote_checked_at IS NULL OR remote_checked_at<=$4)`, user, state, raw(serviceSummary(u)), checked)
 	return e
 }
 func (a *App) liveService(ctx context.Context, s serviceSelection) (map[string]any, error) {
@@ -80,21 +80,25 @@ func (a *App) liveService(ctx context.Context, s serviceSelection) (map[string]a
 
 // A complete, validated snapshot is required before inferring deletion. An
 // unavailable server, denied API key or partial page never invalidates service.
-// This single-process deployment makes at most one bounded refresh per minute.
-func (a *App) refreshServiceStates(ctx context.Context) error {
-	if !a.healthMu.TryLock() {
+// This single-process deployment makes at most one bounded background refresh per ten seconds.
+func (a *App) refreshServiceStates(ctx context.Context, force ...bool) error {
+	forced := len(force) > 0 && force[0]
+	if forced {
+		a.healthMu.Lock()
+	} else if !a.healthMu.TryLock() {
 		return nil
 	}
 	defer a.healthMu.Unlock()
-	if a.now().Before(a.nextHealthSync) {
+	if !forced && a.now().Before(a.nextHealthSync) {
 		return nil
 	}
-	a.nextHealthSync = a.now().Add(time.Minute)
+	a.nextHealthSync = a.now().Add(10 * time.Second)
 	var count int
 	if e := a.DB.QueryRow(ctx, "SELECT count(*) FROM service_accounts").Scan(&count); e != nil {
 		return e
 	}
 	if count == 0 {
+		a.lastHealthSuccess = a.now()
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -168,7 +172,10 @@ func (a *App) refreshServiceStates(ctx context.Context) error {
 			return fmt.Errorf("save service health: %w", e)
 		}
 	}
-	return tx.Commit(ctx)
+	if e = tx.Commit(ctx); e == nil {
+		a.lastHealthSuccess = a.now()
+	}
+	return e
 }
 func inactiveService(state string) bool {
 	return state != "" && state != "active" && state != "unknown"

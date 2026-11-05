@@ -71,7 +71,7 @@ func TestDeletedCoreIdentityInvalidatesPortalWithoutRegrant(t *testing.T) {
 	}
 	unavailable.Store(true)
 	expect(t, f.req("GET", "me/service?service="+id, nil, &f.customer, true), 503)
-	if e := f.a.refreshServiceStates(ctx); e == nil {
+	if e := f.a.refreshServiceStates(ctx, true); e == nil {
 		t.Fatal("unavailable snapshot accepted")
 	}
 	var state string
@@ -139,7 +139,7 @@ func TestServiceStateExpiryQuotaAndMalformedSnapshots(t *testing.T) {
 	}))
 	defer core.Close()
 	f.a.TestControlURL = core.URL
-	if e := f.a.refreshServiceStates(ctx); e == nil {
+	if e := f.a.refreshServiceStates(ctx, true); e == nil {
 		t.Fatal("partial snapshot accepted")
 	}
 	var state string
