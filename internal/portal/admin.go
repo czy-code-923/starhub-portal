@@ -35,7 +35,7 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 		return nil
 	}
 	if kind == "plans" && r.Method == "GET" {
-		data, e := jsonRows(r.Context(), a.DB, "SELECT COALESCE(jsonb_agg(x ORDER BY x.sort,x.name),'[]') FROM(SELECT p.*,(SELECT count(*) FROM portal_effective_seats(p.id,now())) effective_members,(SELECT count(*) FROM service_accounts s WHERE s.plan_id=p.id AND s.policy_version<p.policy_revision AND NOT s.legacy_combined AND s.remote_state NOT IN ('deleted','invalid')) policy_pending,(SELECT count(*) FROM service_accounts s WHERE s.plan_id=p.id AND s.policy_version<p.policy_revision AND s.policy_error<>'') policy_failed FROM plans p WHERE (deleted_at IS NOT NULL)=$1)x", r.URL.Query().Get("deleted") == "1")
+		data, e := jsonRows(r.Context(), a.DB, "SELECT COALESCE(jsonb_agg(x ORDER BY x.sort,x.name),'[]') FROM(SELECT p.*,(SELECT count(*) FROM portal_effective_seats(p.id,now())) effective_members,(SELECT count(*) FROM service_accounts s WHERE s.plan_id=p.id AND s.policy_version<p.policy_revision AND NOT s.legacy_combined AND s.remote_state NOT IN ('deleted','invalid')) policy_pending,(SELECT count(*) FROM service_accounts s WHERE s.plan_id=p.id AND s.policy_version<p.policy_revision AND NOT s.legacy_combined AND s.remote_state NOT IN ('deleted','invalid') AND s.policy_error<>'') policy_failed FROM plans p WHERE (deleted_at IS NOT NULL)=$1)x", r.URL.Query().Get("deleted") == "1")
 		if e != nil {
 			return e
 		}

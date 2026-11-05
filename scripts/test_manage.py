@@ -17,10 +17,10 @@ class InstallerSafety(unittest.TestCase):
     def test_control_compatibility_only_requests_official_local_updater(self):
         from unittest.mock import Mock
         with tempfile.TemporaryDirectory() as tmp:
-            api=Mock(side_effect=lambda resource,*args:{'version':'0.24.2'} if resource=='session' else {'latest':'0.25.2','automatic_update':True} if resource=='panel-release' else {'id':'job'})
+            api=Mock(side_effect=lambda resource,*args:{'version':'0.24.2'} if resource=='session' else {'latest':'0.25.3','automatic_update':True} if resource=='panel-release' else {'id':'job'})
             self.assertIn('queued',m.control_compatibility(Path(tmp),api))
-            api.assert_any_call('panel-updates',{'current':'0.24.2','version':'0.25.2'},'POST')
-            ready=Mock(return_value={'version':'0.25.2'});self.assertIn('ready',m.control_compatibility(Path(tmp),ready));self.assertEqual(ready.call_count,1)
+            api.assert_any_call('panel-updates',{'current':'0.24.2','version':'0.25.3'},'POST')
+            ready=Mock(return_value={'version':'0.25.3'});self.assertIn('ready',m.control_compatibility(Path(tmp),ready));self.assertEqual(ready.call_count,1)
     def test_helper_uses_the_selected_loopback_family(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)

@@ -93,3 +93,18 @@ func TestPlanPolicyChangesReachPaidServicesWithoutChangingPurchase(t *testing.T)
 		t.Fatal("queued policy duplicated current revision")
 	}
 }
+
+func TestDeletedServiceDoesNotRemainInPolicyFailureCounts(t *testing.T) {
+	f := setup(t)
+	root := paidService(t, f)
+	f.a.DB.Exec(context.Background(), "UPDATE service_accounts SET remote_state='deleted',policy_version=0,policy_error='previous failure' WHERE order_id=$1", root)
+	w := f.req("GET", "admin/plans", nil, &f.admin, true)
+	expect(t, w, 200)
+	var plans []map[string]any
+	if e := json.Unmarshal(w.Body.Bytes(), &plans); e != nil {
+		t.Fatal(e)
+	}
+	if plans[0]["policy_pending"] != float64(0) || plans[0]["policy_failed"] != float64(0) {
+		t.Fatal(w.Body.String())
+	}
+}

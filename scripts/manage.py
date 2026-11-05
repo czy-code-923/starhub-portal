@@ -29,7 +29,7 @@ import urllib.request
 import zipfile
 
 REPO = 'czy-code-923/starhub-portal'
-MINIMUM_CONTROL = (0,25,2)
+MINIMUM_CONTROL = (0,25,3)
 VERSION = re.compile(r'^v?[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}$')
 MARKER = 'starhub-portal-v1'
 DEFAULT_ROOT = Path(os.environ.get('ProgramData', r'C:\ProgramData')) / 'StarhubPortal' if os.name == 'nt' else Path('/opt/starhub-portal')
@@ -523,7 +523,7 @@ def control_compatibility(root,api=None):
     latest=release.get('latest','')
     try:available=tuple(int(x) for x in latest.lstrip('v').split('.'))
     except ValueError:return 'waiting for official compatible release'
-    if available<MINIMUM_CONTROL:return 'waiting for Starhub 0.25.2+'
+    if available<MINIMUM_CONTROL:return 'waiting for Starhub 0.25.3+'
     if not release.get('automatic_update'):return 'control updater offline; update Starhub first'
     try:api('panel-updates',{'current':current,'version':latest},'POST')
     except RuntimeError as e:
