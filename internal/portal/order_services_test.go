@@ -122,6 +122,16 @@ func TestLegacyMigrationFreezesRequestAndMapsEveryOrder(t *testing.T) {
 	}))
 	defer mock.Close()
 	f.a.TestControlURL = mock.URL
+	if _, e = f.a.DB.Exec(ctx, "UPDATE orders SET fulfillment='queued' WHERE id=$1", ids[0]); e != nil {
+		t.Fatal(e)
+	}
+	if e = f.a.migrateCustomer(ctx, f.customer.ID); e == nil || !strings.Contains(e.Error(), "开通完成") {
+		t.Fatal("split raced an in-flight legacy grant", e)
+	}
+	if calls != 0 {
+		t.Fatal("migration request sent before legacy grant converged")
+	}
+	f.a.DB.Exec(ctx, "UPDATE orders SET fulfillment='active' WHERE id=$1", ids[0])
 	if e = f.a.migrateCustomer(ctx, f.customer.ID); e == nil {
 		t.Fatal("transient failure accepted")
 	}

@@ -50,6 +50,15 @@ func (a *App) migrateCustomer(ctx context.Context, user string) error {
 		return e
 	}
 	if len(sealed) == 0 {
+		// Let in-flight legacy grants converge first. Otherwise a delayed old
+		// grant could re-enable the shared identity after the split revoked it.
+		var pending bool
+		if e = conn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM orders WHERE customer_id=$1 AND state='paid' AND NOT per_order AND fulfillment<>'active')", user).Scan(&pending); e != nil {
+			return e
+		}
+		if pending {
+			return Problem{409, "等待旧版已付款订单开通完成，再拆分独立订阅"}
+		}
 		var old, last, oldID string
 		e = conn.QueryRow(ctx, "SELECT external_id,order_id,control_user_id FROM service_accounts WHERE customer_id=$1 AND legacy_combined", user).Scan(&old, &last, &oldID)
 		if e == pgx.ErrNoRows {
