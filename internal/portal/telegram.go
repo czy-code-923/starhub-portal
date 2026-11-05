@@ -422,11 +422,16 @@ func (a *App) tgDeliver(ctx context.Context, c tgConfig) error {
 	}
 	var amount int64
 	var state, review, method string
-	e = a.DB.QueryRow(ctx, `SELECT o.payable,o.state,COALESCE(m.state,''),COALESCE(m.method_name,'在线支付') FROM orders o LEFT JOIN manual_payments m ON m.order_id=o.id WHERE o.id=$1`, order).Scan(&amount, &state, &review, &method)
+	var renewal bool
+	e = a.DB.QueryRow(ctx, `SELECT o.payable,o.state,COALESCE(m.state,''),COALESCE(m.method_name,'在线支付'),o.renewal_of IS NOT NULL FROM orders o LEFT JOIN manual_payments m ON m.order_id=o.id WHERE o.id=$1`, order).Scan(&amount, &state, &review, &method, &renewal)
 	if e != nil {
 		return e
 	}
 	labels := map[string]string{"order.created": "新订单", "payment.submitted": "付款凭证 / 红包口令已提交", "payment.approve": "核款通过", "payment.reject": "凭证被驳回", "service.active": "服务已开通"}
+	if renewal {
+		labels["order.created"] = "新续费订单"
+		labels["service.active"] = "原订阅已续期"
+	}
 	message := fmt.Sprintf("星枢购买面板 · %s\n订单 %s\n应付 ¥%.2f · %s\n订单 %s / 核款 %s\n可点订单按钮核验；收款码需真实流水，红包需实际领取。通知不含完整口令。", labels[kind], order, float64(amount)/100, method, state, review)
 	for _, p := range c.Principals {
 		if !p.Notify || !includes(p.Scopes, scope) {

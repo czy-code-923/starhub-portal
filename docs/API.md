@@ -53,3 +53,8 @@ Telegram approve 现在同时支持口令红包与 alipay_static / wechat_static
 `GET /admin/capacity` 分别返回核心真实 identities / identity_limit（仍用于容量准入）、paid_orders（核验通过的历史订单）、portal_services（当前有效订阅）、invalid_services、unchecked_services、registered_customers 和 services_checked_at。非已付款订单不计入服务统计。后台快照间隔 60 秒，数据库仅缓存明确的计量字段，不缓存代理凭据。
 
 `GET /admin/record-retention?kind=jobs|audit` 需对应 jobs/audit 权限，返回固定保留策略、条数和 can_clear。`POST` 同路径仅主管理员可执行，需 CSRF 和 `{confirmed:true}`；audit 清空后留下此次清理标记，jobs 仅删除 succeeded / rolled_back。工作中和待重试任务、财务与幂等凭据不可通过此接口删除。
+
+
+0.7.0：`GET /catalog` 增加每套餐 `stock_limit`、`remaining_stock`、`sold_out` 及响应 `stock_checked_at`；不限名额时 remaining_stock=null。新购 pending / paid / refund_pending 占名额，续费不占名额。可见套餐页每 10 秒刷新，创建订单在数据库事务锁中复核余量。
+
+`GET /me/renewal?service=<原订阅订单ID>` 返回可用续费价格、服务状态、注意事项和已有待处理续费订单，仅本用户可读。`POST /checkout/quote` 与 `POST /orders` 可加 `renewal_of=<原服务订单ID>`：须同套餐且允许续费，优惠码规则沿用结算服务；同一订阅只允许一个待支付 / 待生效续费。订单列表和详情增加 renewal_of 和 service_id，客户端应使用 service_id 进入原订阅。幂等键绑定续费目标，不可改为其他订阅或新购。已核验续费通过星枢 0.25.1+ commerce/renewals 延长期限；不会新增 service_accounts 或重新创建已删除身份，清理任务历史后也不会重复续期。续费只延长时长，不改当前额度、用量、权限和重置时间。

@@ -89,12 +89,12 @@ func safeJobError(e error) string {
 	return "任务暂未完成，请检查连接配置、商业接口版本及服务状态"
 }
 func (a *App) fulfill(ctx context.Context, order string) error {
-	var user, state, fulfillment string
+	var user, state, fulfillment, renewalOf string
 	var snap []byte
 	var created time.Time
 	var perOrder bool
 	var savedPayload []byte
-	if e := a.DB.QueryRow(ctx, "SELECT customer_id,state,snapshot,created_at,per_order,fulfillment_payload,fulfillment FROM orders WHERE id=$1", order).Scan(&user, &state, &snap, &created, &perOrder, &savedPayload, &fulfillment); e != nil {
+	if e := a.DB.QueryRow(ctx, "SELECT customer_id,state,snapshot,created_at,per_order,fulfillment_payload,fulfillment,COALESCE(renewal_of,'') FROM orders WHERE id=$1", order).Scan(&user, &state, &snap, &created, &perOrder, &savedPayload, &fulfillment, &renewalOf); e != nil {
 		return e
 	}
 	if state != "paid" || fulfillment == "active" {
@@ -138,18 +138,31 @@ func (a *App) fulfill(ctx context.Context, order string) error {
 		}
 		return Problem{409, "账户未激活或已停用，请管理员处理已付款订单"}
 	}
-	if e = a.checkGroups(ctx, snapshot.Plan.Groups, snapshot.Plan.Protocols); e != nil {
-		return e
+	if renewalOf == "" {
+		if e = a.checkGroups(ctx, snapshot.Plan.Groups, snapshot.Plan.Protocols); e != nil {
+			return e
+		}
 	}
 	var result struct {
-		UserID         string `json:"user_id"`
-		SubscriptionID string `json:"subscription_id"`
-		Operation      string `json:"operation_id"`
+		UserID         string    `json:"user_id"`
+		SubscriptionID string    `json:"subscription_id"`
+		Operation      string    `json:"operation_id"`
+		Expires        time.Time `json:"expires_at"`
 	}
 	body := map[string]any{"external_id": "portal:" + order, "order_id": order, "name": grantName(name, snapshot.Plan.Name, order), "months": snapshot.Price.Months, "quota_bytes": snapshot.Plan.Quota, "group_ids": snapshot.Plan.Groups, "protocols": snapshot.Plan.Protocols, "max_devices": snapshot.Plan.MaxDevices, "billing_mode": snapshot.Plan.Billing, "multiplier_milli": snapshot.Plan.Multiplier}
 	if !perOrder {
 		body["external_id"] = "portal:" + user
 		body["name"] = name
+	}
+	var target renewalTarget
+	path := "commerce/entitlements"
+	if renewalOf != "" {
+		target, e = a.renewalTarget(ctx, user, renewalOf)
+		if e != nil {
+			return e
+		}
+		body = map[string]any{"external_id": target.External, "order_id": order, "user_id": target.Selection.User, "subscription_id": target.Selection.Subscription, "months": snapshot.Price.Months}
+		path = "commerce/renewals"
 	}
 	if len(savedPayload) == 0 {
 		sealed, err := a.seal(body)
@@ -163,17 +176,25 @@ func (a *App) fulfill(ctx context.Context, order string) error {
 	if e = a.unseal(savedPayload, &body); e != nil {
 		return e
 	}
-	if e = a.control(ctx, "POST", "commerce/entitlements", body, &result); e != nil {
+	if e = a.control(ctx, "POST", path, body, &result); e != nil {
 		return e
 	}
-	if len(result.UserID) != 32 || len(result.SubscriptionID) != 32 {
+	if !portalID.MatchString(result.UserID) || !portalID.MatchString(result.SubscriptionID) || result.Operation != order || (renewalOf != "" && (result.UserID != target.Selection.User || result.SubscriptionID != target.Selection.Subscription || !result.Expires.After(a.now()))) {
 		return errors.New("invalid entitlement response")
 	}
 	// Persist the mapping before waiting for Agent convergence. A concurrent
 	// disable job can then revoke the actual identity, even if this job retries.
-	if _, e = conn.Exec(ctx, `INSERT INTO service_accounts(customer_id,control_user_id,subscription_id,plan_id,last_order_id,order_id,external_id,legacy_combined) VALUES($1,$2,$3,$4,$5,$5,$6,$7) ON CONFLICT(order_id) DO UPDATE SET updated_at=now()`, user, result.UserID, result.SubscriptionID, snapshot.Plan.ID, order, body["external_id"], !perOrder); e != nil {
-		return e
+	if renewalOf != "" {
+		_, e = conn.Exec(ctx, "UPDATE service_accounts SET last_order_id=$2,updated_at=now(),remote_state='unknown',remote_checked_at=NULL WHERE order_id=$1", renewalOf, order)
+		if e != nil {
+			return e
+		}
+	} else {
+		if _, e = conn.Exec(ctx, `INSERT INTO service_accounts(customer_id,control_user_id,subscription_id,plan_id,last_order_id,order_id,external_id,legacy_combined) VALUES($1,$2,$3,$4,$5,$5,$6,$7) ON CONFLICT(order_id) DO UPDATE SET updated_at=now()`, user, result.UserID, result.SubscriptionID, snapshot.Plan.ID, order, body["external_id"], !perOrder); e != nil {
+			return e
+		}
 	}
+
 	if e = conn.QueryRow(ctx, "SELECT status FROM customers WHERE id=$1", user).Scan(&status); e != nil {
 		return e
 	}
@@ -183,24 +204,38 @@ func (a *App) fulfill(ctx context.Context, order string) error {
 		}
 		return Problem{409, "账户已停用，已请求撤销代理身份"}
 	}
-	var ready struct {
-		Ready  bool   `json:"ready"`
-		Reason string `json:"reason"`
+	// Renewal is an authoritative expiry transaction. Quota exhaustion or an
+	// offline node must not turn an already-applied extension into a failed
+	// payment; Agent convergence remains visible in the core service status.
+	if renewalOf == "" {
+		var ready struct {
+			Ready  bool   `json:"ready"`
+			Reason string `json:"reason"`
+		}
+		if e = a.control(ctx, "GET", "subscriptions/"+result.SubscriptionID+"/check?client=sing-box-latest", nil, &ready); e != nil {
+			return e
+		}
+		if !ready.Ready {
+			return Problem{409, "权益已保存，等待节点配置和独立身份同步就绪"}
+		}
 	}
-	if e = a.control(ctx, "GET", "subscriptions/"+result.SubscriptionID+"/check?client=sing-box-latest", nil, &ready); e != nil {
-		return e
-	}
-	if !ready.Ready {
-		return Problem{409, "权益已保存，等待节点配置和独立身份同步就绪"}
-	}
+
 	tx, e := conn.Begin(ctx)
 	if e != nil {
 		return e
 	}
 	defer tx.Rollback(ctx)
-	if _, e = tx.Exec(ctx, `INSERT INTO service_accounts(customer_id,control_user_id,subscription_id,plan_id,last_order_id,order_id,external_id,legacy_combined) VALUES($1,$2,$3,$4,$5,$5,$6,$7) ON CONFLICT(order_id) DO UPDATE SET updated_at=now()`, user, result.UserID, result.SubscriptionID, snapshot.Plan.ID, order, body["external_id"], !perOrder); e != nil {
-		return e
+	if renewalOf != "" {
+		_, e = tx.Exec(ctx, "UPDATE service_accounts SET last_order_id=$2,updated_at=now(),remote_state='unknown',remote_checked_at=NULL WHERE order_id=$1", renewalOf, order)
+		if e != nil {
+			return e
+		}
+	} else {
+		if _, e = tx.Exec(ctx, `INSERT INTO service_accounts(customer_id,control_user_id,subscription_id,plan_id,last_order_id,order_id,external_id,legacy_combined) VALUES($1,$2,$3,$4,$5,$5,$6,$7) ON CONFLICT(order_id) DO UPDATE SET updated_at=now()`, user, result.UserID, result.SubscriptionID, snapshot.Plan.ID, order, body["external_id"], !perOrder); e != nil {
+			return e
+		}
 	}
+
 	if _, e = tx.Exec(ctx, "INSERT INTO entitlement_ledger(order_id,customer_id,control_operation) VALUES($1,$2,$3) ON CONFLICT(order_id) DO NOTHING", order, user, result.Operation); e != nil {
 		return e
 	}
@@ -220,7 +255,7 @@ func (a *App) syncAccess(ctx context.Context, user string) error {
 		}
 		// External ID remains authoritative if a grant succeeded remotely but its
 		// response was lost before the local account mapping could be persisted.
-		rows, e := a.DB.Query(ctx, `SELECT external_id FROM service_accounts WHERE customer_id=$1 UNION SELECT 'portal:'||id FROM orders WHERE customer_id=$1 AND state='paid' UNION SELECT 'portal:'||$1::text WHERE NOT EXISTS(SELECT 1 FROM service_migrations WHERE customer_id=$1 AND state='applied')`, user)
+		rows, e := a.DB.Query(ctx, `SELECT external_id FROM service_accounts WHERE customer_id=$1 UNION SELECT 'portal:'||id FROM orders WHERE customer_id=$1 AND state='paid' AND renewal_of IS NULL UNION SELECT 'portal:'||$1::text WHERE NOT EXISTS(SELECT 1 FROM service_migrations WHERE customer_id=$1 AND state='applied')`, user)
 		if e != nil {
 			return e
 		}

@@ -30,6 +30,8 @@ type fixture struct {
 	handler                http.Handler
 	ready                  atomic.Bool
 	grants                 atomic.Int32
+	renewals               atomic.Int32
+	checks                 atomic.Int32
 	admin, customer, other actor
 }
 
@@ -85,6 +87,11 @@ func setup(t *testing.T) *fixture {
 			send(w, 200, map[string]int{"remaining_identities": 400, "identity_limit": 500, "identities": 100})
 		case r.URL.Path == "/api/v1/commerce/validate":
 			send(w, 200, map[string]any{"ready": f.ready.Load(), "reason": "fixture not ready"})
+		case r.URL.Path == "/api/v1/commerce/renewals":
+			f.renewals.Add(1)
+			var b map[string]any
+			json.NewDecoder(r.Body).Decode(&b)
+			send(w, 200, map[string]any{"user_id": b["user_id"], "subscription_id": b["subscription_id"], "operation_id": b["order_id"], "expires_at": time.Now().AddDate(0, 1, 0)})
 		case r.URL.Path == "/api/v1/commerce/entitlements":
 			f.grants.Add(1)
 			var b map[string]any
@@ -92,6 +99,7 @@ func setup(t *testing.T) *fixture {
 			external, _ := b["external_id"].(string)
 			send(w, 200, map[string]string{"user_id": hash("user/" + external)[:32], "subscription_id": hash("sub/" + external)[:32], "operation_id": b["order_id"].(string)})
 		case strings.HasSuffix(r.URL.Path, "/check"):
+			f.checks.Add(1)
 			send(w, 200, map[string]bool{"ready": true})
 		default:
 			send(w, 200, map[string]bool{"ok": true})

@@ -10,8 +10,8 @@ describe('per-order subscriptions',()=>{
    if(path.startsWith('me/devices'))return[];if(path.includes('/check'))return{ready:true};return{url:'https://example.test/'+new URLSearchParams(path.split('?')[1]).get('client')};
   });
   const fetcher=vi.fn();vi.stubGlobal('fetch',fetcher);const w=mount(SubscriptionsPanel,{props:{request,initial:id}});await flushPromises();expect(w.text()).toContain('Older order');
-  await w.find('[data-client="mihomo"] button').trigger('click');await flushPromises();expect(request).toHaveBeenCalledWith('me/subscription/share?service='+id+'&client=mihomo');expect(w.find('[aria-label="Mihomo 订阅链接"]').element).toHaveProperty('value','https://example.test/mihomo');
-  await w.find('[data-client="sing-box"] button').trigger('click');await flushPromises();expect(request).toHaveBeenCalledWith('me/subscription/share?service='+id+'&client=sing-box');expect(w.find('[aria-label="sing-box 订阅链接"]').element).toHaveProperty('value','https://example.test/sing-box');
+  await w.find('select').setValue('mihomo');await flushPromises();expect(request).toHaveBeenCalledWith('me/subscription/share?service='+id+'&client=mihomo');expect(w.find('[aria-label="当前客户端订阅链接"]').element).toHaveProperty('value','https://example.test/mihomo');
+  await w.find('select').setValue('sing-box');await flushPromises();expect(request).toHaveBeenCalledWith('me/subscription/share?service='+id+'&client=sing-box');expect(w.find('[aria-label="当前客户端订阅链接"]').element).toHaveProperty('value','https://example.test/sing-box');
   expect(w.findAll('button').some(b=>b.text().includes('下载'))).toBe(false);expect(fetcher).not.toHaveBeenCalled();w.unmount();
  });
  it('shows deleted services without exposing or requesting import links',async()=>{
@@ -20,9 +20,9 @@ describe('per-order subscriptions',()=>{
  });
  it('clears previous links when switching orders and excludes incompatible formats',async()=>{
   const a='a'.repeat(32),b='b'.repeat(32),request=vi.fn(async(path:string)=>path.startsWith('me/services')?{items:[{id:a,plan_name:'First'},{id:b,plan_name:'Second'}],total:2}:path==='clients'?[{id:'mihomo',name:'Mihomo'},{id:'other',name:'Unsupported'}]:path.startsWith('me/service?')?{service:{state:'active'}}:path.startsWith('me/devices')?[]:path.includes('/check')?{ready:!path.endsWith('other'),reason:'不支持此协议'}:{url:'https://example.test/'+(path.includes(a)?a:b)});
-  const w=mount(SubscriptionsPanel,{props:{request}});await flushPromises();await w.find('[data-client="mihomo"] button').trigger('click');await flushPromises();expect(w.find('[aria-label="Mihomo 订阅链接"]').element).toHaveProperty('value','https://example.test/'+a);
-  await w.findAll('.service-open')[1]!.trigger('click');await flushPromises();expect(w.find('[aria-label="Mihomo 订阅链接"]').exists()).toBe(false);await w.find('[data-client="mihomo"] button').trigger('click');await flushPromises();expect(w.find('[aria-label="Mihomo 订阅链接"]').element).toHaveProperty('value','https://example.test/'+b);
-  await w.find('[data-client="other"] button').trigger('click');await flushPromises();expect(w.text()).toContain('不支持此协议');expect(request).not.toHaveBeenCalledWith('me/subscription/share?service='+b+'&client=other');w.unmount();
+  const w=mount(SubscriptionsPanel,{props:{request}});await flushPromises();await w.find('select').setValue('mihomo');await flushPromises();expect(w.find('[aria-label="当前客户端订阅链接"]').element).toHaveProperty('value','https://example.test/'+a);
+  await w.findAll('.service-open')[1]!.trigger('click');await flushPromises();expect(w.find('[aria-label="当前客户端订阅链接"]').element).toHaveProperty('value','https://example.test/'+b);
+  await w.find('select').setValue('other');await flushPromises();expect(w.text()).toContain('不支持此协议');expect(request).not.toHaveBeenCalledWith('me/subscription/share?service='+b+'&client=other');w.unmount();
  });
 });
 describe('customer presentation',()=>{

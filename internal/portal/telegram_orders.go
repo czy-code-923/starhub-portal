@@ -54,9 +54,13 @@ func (a *App) tgOrderCard(ctx context.Context, c tgConfig, p tgPrincipal, order 
 	}
 	var state, review, method, name string
 	var amount int64
-	e := a.DB.QueryRow(ctx, `SELECT o.state,o.payable,COALESCE(o.snapshot->'plan'->>'name','套餐'),COALESCE(m.state,''),COALESCE(m.method_id,'') FROM orders o LEFT JOIN manual_payments m ON m.order_id=o.id WHERE o.id=$1`, order).Scan(&state, &amount, &name, &review, &method)
+	var renewal bool
+	e := a.DB.QueryRow(ctx, `SELECT o.state,o.payable,COALESCE(o.snapshot->'plan'->>'name','套餐'),COALESCE(m.state,''),COALESCE(m.method_id,''),o.renewal_of IS NOT NULL FROM orders o LEFT JOIN manual_payments m ON m.order_id=o.id WHERE o.id=$1`, order).Scan(&state, &amount, &name, &review, &method, &renewal)
 	if e != nil {
 		return e
+	}
+	if renewal {
+		name += " · 续费原订阅"
 	}
 	buttons := [][]tgButton{}
 	if method == "alipay_redpacket" && includes(p.Scopes, "redpacket") && includes(p.Scopes, "payments") {
