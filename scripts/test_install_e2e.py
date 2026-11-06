@@ -22,6 +22,14 @@ version=(ROOT/'VERSION').read_text().strip()
 bundle=(ROOT/'dist'/('starhub-portal-linux-'+m.architecture()+'.zip')).read_bytes()
 # Match the real helper's UMask=0077, including archive extraction permissions.
 os.umask(0o077)
+# Load a real verified upstream plugin through an isolated Docker config. The
+# runner's system plugin and existing Docker engine are never replaced.
+with tempfile.TemporaryDirectory(prefix='starhub-compose-ci-') as tmp:
+    config=Path(tmp)
+    m.install_compose_plugin(config/'cli-plugins')
+    actual=m.run(['docker','--config',str(config),'compose','version'],timeout=30)
+    assert b'Docker Compose version' in actual,actual
+    print('Verified official Compose plugin loads with isolated DOCKER_CONFIG.')
 with tempfile.TemporaryDirectory(prefix='starhub-portal-ci-',dir='/opt') as tmp:
     root=Path(tmp)/'installation'
     args=SimpleNamespace(root=root,port=18088,origin='http://127.0.0.1:18088',bind='127.0.0.1',admin_email='ci@example.test',ask_password=False,version=version)

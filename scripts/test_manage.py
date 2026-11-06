@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -14,6 +15,40 @@ spec.loader.exec_module(m)
 
 
 class InstallerSafety(unittest.TestCase):
+    def test_missing_compose_is_added_without_reinstalling_engine(self):
+        calls=[]
+        def run(args,**kwargs):
+            calls.append(args)
+            if args[1]=='info':return b'linux\n'
+            if calls.count(['docker','compose','version'])==1:
+                raise m.CommandFailure('docker compose version',1,"docker: 'compose' is not a docker command.")
+            return b'Docker Compose version v5.6.0\n'
+        with patch.object(m.shutil,'which',return_value='/usr/bin/docker'),patch.object(m,'run',side_effect=run),patch.object(m,'enable_docker_boot'),patch.object(m,'install_compose_plugin') as plugin,patch.object(m.os,'name','posix'):
+            m.check_docker(True)
+            plugin.assert_called_once()
+        self.assertEqual(calls.count(['docker','compose','version']),2)
+        self.assertFalse(any(x[0]=='sh' for x in calls))
+    def test_plugin_integrity_and_existing_plugin_are_protected(self):
+        binary=b'\x7fELF-test-official-fixture'
+        asset='docker-compose-linux-x86_64'
+        info={'tag_name':'v5.6.0','assets':[{'name':asset,'browser_download_url':'https://github.com/docker/compose/releases/download/v5.6.0/'+asset,'digest':'sha256:'+hashlib.sha256(binary).hexdigest()}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            directory=Path(tmp)/'plugins'
+            with patch.object(m,'architecture',return_value='amd64'),patch.object(m,'download',side_effect=[json.dumps(info).encode(),b'corrupt']):
+                with self.assertRaisesRegex(ValueError,'SHA-256'):m.install_compose_plugin(directory)
+            self.assertFalse(directory.exists())
+            with patch.object(m,'architecture',return_value='amd64'),patch.object(m,'download',side_effect=[json.dumps(info).encode(),binary]):
+                m.install_compose_plugin(directory)
+            self.assertEqual((directory/'docker-compose').read_bytes(),binary)
+            with patch.object(m,'architecture',return_value='amd64'),patch.object(m,'download',side_effect=[json.dumps(info).encode(),binary]):
+                with self.assertRaisesRegex(ValueError,'preserved'):m.install_compose_plugin(directory)
+            self.assertEqual((directory/'docker-compose').read_bytes(),binary)
+            self.assertEqual([x.name for x in directory.iterdir()],['docker-compose'])
+    def test_command_error_identifies_preflight_without_exposing_arguments(self):
+        from subprocess import CompletedProcess
+        with patch.object(m.subprocess,'run',return_value=CompletedProcess([],1,b'',b"docker: 'compose' is not a docker command.")):
+            with self.assertRaisesRegex(m.CommandFailure,'docker compose version') as exc:m.run(['docker','compose','version'])
+        self.assertIn('not a docker command',exc.exception.detail)
     def test_services_start_preserves_existing_installation_and_checks_health(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)/'portal';root.mkdir()

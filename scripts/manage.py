@@ -52,6 +52,12 @@ def read_json(path):
     return json.loads(Path(path).read_text(encoding='utf-8'))
 
 
+class CommandFailure(RuntimeError):
+    def __init__(self, label, returncode, detail):
+        super().__init__(f'{label} failed (exit {returncode}); inspect local service logs')
+        self.detail = detail
+
+
 def run(args, cwd=None, input=None, timeout=600, output=None, env=None):
     result = subprocess.run([str(x) for x in args], cwd=cwd, input=input, stdout=output or subprocess.PIPE,
                             stderr=subprocess.PIPE, timeout=timeout, check=False, env=env)
@@ -68,7 +74,15 @@ def run(args, cwd=None, input=None, timeout=600, output=None, env=None):
             write_private(Path(cwd) / 'last-command-error.log', detail)
         if os.environ.get('GITHUB_ACTIONS') == 'true':
             print(detail, file=sys.stderr)
-        raise RuntimeError(f'{Path(str(args[0])).name} failed (exit {result.returncode}); inspect local service logs')
+        label = Path(str(args[0])).name
+        if label in ('docker', 'systemctl') and len(args) > 1:
+            label += ' ' + str(args[1])
+        if label == 'docker compose' and len(args) > 2 and str(args[2]) in ('version', 'build', 'up', 'logs'):
+            label += ' ' + str(args[2])
+        failure = CommandFailure(label, result.returncode, detail)
+        if cwd:
+            failure.args = (str(failure) + '; diagnostic: ' + str(Path(cwd) / 'last-command-error.log'),)
+        raise failure
     return result.stdout or b''
 
 
@@ -212,7 +226,67 @@ def check_docker(install=False):
         enable_docker_boot()
     if run(['docker', 'info', '--format', '{{.OSType}}'], timeout=20).strip() != b'linux':
         raise RuntimeError('Docker must be running in Linux containers mode')
-    run(['docker', 'compose', 'version'], timeout=20)
+    try:
+        run(['docker', 'compose', 'version'], timeout=20)
+    except CommandFailure as exc:
+        missing = any(x in exc.detail.lower() for x in ('is not a docker command', 'unknown command'))
+        if not install or os.name == 'nt' or not missing:
+            raise RuntimeError('Docker Compose plugin is unavailable or broken. Run docker compose version for details; Linux installation can automatically add a missing official plugin.') from None
+        print('Docker Engine is ready; Compose plugin is missing. Installing the verified official Docker Compose plugin.', flush=True)
+        install_compose_plugin()
+        run(['docker', 'compose', 'version'], timeout=20)
+
+
+def install_compose_plugin(directory=None):
+    # Docker's documented system-wide CLI plugin directory works even when the
+    # updater uses a private DOCKER_CONFIG. No Docker daemon restart/reinstall.
+    info = json.loads(download('https://api.github.com/repos/docker/compose/releases/latest', 2 << 20))
+    tag = info.get('tag_name', '')
+    if not VERSION.fullmatch(tag) or info.get('draft') or info.get('prerelease'):
+        raise ValueError('Only official stable Docker Compose releases are accepted')
+    name = 'docker-compose-linux-' + {'amd64': 'x86_64', 'arm64': 'aarch64'}[architecture()]
+    url = 'https://github.com/docker/compose/releases/download/' + tag + '/' + name
+    asset = next((x for x in info.get('assets', []) if x.get('name') == name), None)
+    if not asset or asset.get('browser_download_url') != url:
+        raise ValueError('Official Docker Compose asset unavailable for this architecture')
+    data = download(url)
+    digest = asset.get('digest', '')
+    if not re.fullmatch(r'sha256:[a-f0-9]{64}', digest):
+        checksum_url = url + '.sha256'
+        checksum = next((x for x in info.get('assets', []) if x.get('name') == name + '.sha256'), None)
+        if not checksum or checksum.get('browser_download_url') != checksum_url:
+            raise ValueError('Official Docker Compose SHA-256 unavailable; refusing unverified install')
+        digest = 'sha256:' + download(checksum_url, 4096).decode('ascii').split()[0]
+    if not re.fullmatch(r'sha256:[a-f0-9]{64}', digest) or hashlib.sha256(data).hexdigest() != digest[7:]:
+        raise ValueError('Docker Compose SHA-256 mismatch; plugin not installed')
+    if not data.startswith(b'\x7fELF'):
+        raise ValueError('Official Docker Compose asset is not a Linux executable')
+    directory = Path(directory) if directory is not None else Path('/usr/local/lib/docker/cli-plugins')
+    if directory.is_symlink():
+        raise ValueError('Compose plugin directory must not be a symlink')
+    directory.mkdir(mode=0o755, parents=True, exist_ok=True)
+    if os.name != 'nt':
+        stat = directory.stat()
+        if stat.st_uid != os.geteuid() or stat.st_mode & 0o022:
+            raise ValueError('Compose plugin directory must be owned by the installer and not writable by others')
+    target = directory / 'docker-compose'
+    if target.exists() or target.is_symlink():
+        raise ValueError('An existing system Compose plugin was preserved. Run docker compose version and repair it explicitly.')
+    with tempfile.NamedTemporaryFile(dir=directory, prefix='.starhub-compose-', delete=False) as f:
+        temp = Path(f.name)
+    try:
+        with temp.open('wb') as f:
+            f.write(data); f.flush(); os.fsync(f.fileno())
+            if os.name != 'nt': os.fchmod(f.fileno(), 0o755)
+    except Exception:
+        temp.unlink(missing_ok=True)
+        raise
+    try:
+        # Hard-link creation is atomic and cannot overwrite a concurrent install.
+        os.link(temp, target)
+    finally:
+        temp.unlink(missing_ok=True)
+    print('Verified Docker Compose ' + tag + ' installed at ' + str(target), flush=True)
 
 
 def enable_docker_boot():
@@ -341,6 +415,7 @@ WantedBy=multi-user.target
 def install(args):
     if os.name != 'nt' and os.geteuid() != 0:
         raise RuntimeError('Run this installer as root / sudo')
+    print('[1/4] Checking Docker Engine and Compose plugin', flush=True)
     check_docker(True)
     root = validate_root(args.root, False)
     if (root / 'installation.json').exists():
@@ -355,6 +430,7 @@ def install(args):
     origin,ip_origin,bind_address=install_origins(args)
     with socket.socket(socket.AF_INET6 if ':' in bind_address else socket.AF_INET) as sock:
         sock.bind((bind_address,port))
+    print('[2/4] Downloading and verifying the official portal release', flush=True)
     version, data = release(args.version)
     root.mkdir(parents=True, exist_ok=True)
     if os.name != 'nt':
@@ -373,8 +449,10 @@ def install(args):
     env_write(root / 'portal.env', {'MASTER_KEY': secrets.token_hex(32), 'WORKER_TOKEN': secrets.token_hex(32), 'PUBLIC_ORIGIN': origin,'IP_ORIGIN':ip_origin})
     marker = {'marker': MARKER, 'root': str(root), 'version': version, 'origin': origin, 'ip_origin':ip_origin, 'port': port}
     write_private(root / 'installation.json', marker)
+    print('[3/4] Building and starting the project containers', flush=True)
     compose(root, 'up', '-d', '--build', timeout=1200)
     health(root, version)
+    print('[4/4] Registering the administrator and background helper', flush=True)
     password = getpass.getpass('Initial administrator password (12+ chars, empty = random): ') if args.ask_password else secrets.token_urlsafe(24)
     if not password:
         password = secrets.token_urlsafe(24)
