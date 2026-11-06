@@ -235,32 +235,76 @@ def check_docker(install=False):
         print('Docker Engine is ready; Compose plugin is missing. Installing the verified official Docker Compose plugin.', flush=True)
         install_compose_plugin()
         run(['docker', 'compose', 'version'], timeout=20)
+    if install:
+        check_buildx(True)
+
+
+def buildx_version(data):
+    match = re.search(r'\bv?(\d+)\.(\d+)\.(\d+)', data.decode('utf-8', errors='replace'))
+    return tuple(map(int, match.groups())) if match else None
+
+
+def check_buildx(install=False):
+    try:
+        current = buildx_version(run(['docker', 'buildx', 'version'], timeout=20))
+    except CommandFailure:
+        current = None
+    if current is not None and current >= (0, 17, 0):
+        return
+    if not install or os.name == 'nt':
+        raise RuntimeError('Compose builds require Docker Buildx 0.17.0+. Update the Buildx plugin (Docker Desktop on Windows), then retry.')
+    print('Buildx is missing or older than 0.17.0; installing a verified official plugin. Existing Docker Engine is preserved.', flush=True)
+    install_buildx_plugin()
+    current = buildx_version(run(['docker', 'buildx', 'version'], timeout=20))
+    if current is None or current < (0, 17, 0):
+        raise RuntimeError('Buildx 0.17.0+ is still not active. Check whether a user-specific Docker plugin overrides the system plugin.')
 
 
 def install_compose_plugin(directory=None):
+    return install_docker_plugin('compose', directory)
+
+
+def install_buildx_plugin(directory=None):
+    return install_docker_plugin('buildx', directory, replace_old=True)
+
+
+def install_docker_plugin(kind, directory=None, replace_old=False):
     # Docker's documented system-wide CLI plugin directory works even when the
     # updater uses a private DOCKER_CONFIG. No Docker daemon restart/reinstall.
-    info = json.loads(download('https://api.github.com/repos/docker/compose/releases/latest', 2 << 20))
+    if kind not in ('compose', 'buildx'):
+        raise ValueError('Unsupported Docker plugin')
+    label = 'Docker Compose' if kind == 'compose' else 'Docker Buildx'
+    info = json.loads(download('https://api.github.com/repos/docker/' + kind + '/releases/latest', 2 << 20))
     tag = info.get('tag_name', '')
     if not VERSION.fullmatch(tag) or info.get('draft') or info.get('prerelease'):
-        raise ValueError('Only official stable Docker Compose releases are accepted')
-    name = 'docker-compose-linux-' + {'amd64': 'x86_64', 'arm64': 'aarch64'}[architecture()]
-    url = 'https://github.com/docker/compose/releases/download/' + tag + '/' + name
+        raise ValueError('Only official stable ' + label + ' releases are accepted')
+    arch = architecture()
+    name = ('docker-compose-linux-' + {'amd64': 'x86_64', 'arm64': 'aarch64'}[arch]) if kind == 'compose' else ('buildx-' + tag + '.linux-' + arch)
+    base = 'https://github.com/docker/' + kind + '/releases/download/' + tag + '/'
+    url = base + name
     asset = next((x for x in info.get('assets', []) if x.get('name') == name), None)
     if not asset or asset.get('browser_download_url') != url:
-        raise ValueError('Official Docker Compose asset unavailable for this architecture')
+        raise ValueError('Official ' + label + ' asset unavailable for this architecture')
     data = download(url)
     digest = asset.get('digest', '')
     if not re.fullmatch(r'sha256:[a-f0-9]{64}', digest):
-        checksum_url = url + '.sha256'
-        checksum = next((x for x in info.get('assets', []) if x.get('name') == name + '.sha256'), None)
+        checksum_name = name + '.sha256' if kind == 'compose' else 'checksums.txt'
+        checksum_url = base + checksum_name
+        checksum = next((x for x in info.get('assets', []) if x.get('name') == checksum_name), None)
         if not checksum or checksum.get('browser_download_url') != checksum_url:
-            raise ValueError('Official Docker Compose SHA-256 unavailable; refusing unverified install')
-        digest = 'sha256:' + download(checksum_url, 4096).decode('ascii').split()[0]
+            raise ValueError('Official ' + label + ' SHA-256 unavailable; refusing unverified install')
+        text = download(checksum_url, 65536).decode('ascii')
+        if kind == 'compose':
+            digest = 'sha256:' + text.split()[0]
+        else:
+            matches = [line.split()[0] for line in text.splitlines() if len(line.split()) == 2 and line.split()[1].lstrip('*') == name]
+            if len(matches) != 1:
+                raise ValueError('Official Buildx checksum entry is missing or ambiguous')
+            digest = 'sha256:' + matches[0]
     if not re.fullmatch(r'sha256:[a-f0-9]{64}', digest) or hashlib.sha256(data).hexdigest() != digest[7:]:
-        raise ValueError('Docker Compose SHA-256 mismatch; plugin not installed')
+        raise ValueError(label + ' SHA-256 mismatch; plugin not installed')
     if not data.startswith(b'\x7fELF'):
-        raise ValueError('Official Docker Compose asset is not a Linux executable')
+        raise ValueError('Official ' + label + ' asset is not a Linux executable')
     directory = Path(directory) if directory is not None else Path('/usr/local/lib/docker/cli-plugins')
     if directory.is_symlink():
         raise ValueError('Compose plugin directory must not be a symlink')
@@ -269,9 +313,14 @@ def install_compose_plugin(directory=None):
         stat = directory.stat()
         if stat.st_uid != os.geteuid() or stat.st_mode & 0o022:
             raise ValueError('Compose plugin directory must be owned by the installer and not writable by others')
-    target = directory / 'docker-compose'
-    if target.exists() or target.is_symlink():
+    target = directory / ('docker-' + kind)
+    if target.is_symlink():
+        raise ValueError('Existing plugin symlink preserved; repair it explicitly')
+    original = target.stat() if target.exists() else None
+    if original and not replace_old:
         raise ValueError('An existing system Compose plugin was preserved. Run docker compose version and repair it explicitly.')
+    if original and (not target.is_file() or (os.name != 'nt' and (original.st_uid != os.geteuid() or original.st_mode & 0o022))):
+        raise ValueError('Existing Buildx plugin permissions are unsafe; refusing replacement')
     with tempfile.NamedTemporaryFile(dir=directory, prefix='.starhub-compose-', delete=False) as f:
         temp = Path(f.name)
     try:
@@ -282,11 +331,26 @@ def install_compose_plugin(directory=None):
         temp.unlink(missing_ok=True)
         raise
     try:
-        # Hard-link creation is atomic and cannot overwrite a concurrent install.
-        os.link(temp, target)
+        if original:
+            if target.stat() != original:
+                raise ValueError('Existing Buildx plugin changed during installation; retry after the other operation finishes')
+            backups = directory / '.starhub-backups'
+            if backups.is_symlink():
+                raise ValueError('Plugin backup directory must not be a symlink')
+            backups.mkdir(mode=0o700, exist_ok=True)
+            if os.name != 'nt':
+                stat = backups.stat()
+                if stat.st_uid != os.geteuid() or stat.st_mode & 0o022:
+                    raise ValueError('Plugin backup directory permissions are unsafe')
+            backup = backups / (target.name + '-' + secrets.token_hex(8))
+            os.link(target, backup)
+            os.replace(temp, target)
+        else:
+            # Hard-link creation is atomic and cannot overwrite another install.
+            os.link(temp, target)
     finally:
         temp.unlink(missing_ok=True)
-    print('Verified Docker Compose ' + tag + ' installed at ' + str(target), flush=True)
+    print('Verified ' + label + ' ' + tag + ' installed at ' + str(target), flush=True)
 
 
 def enable_docker_boot():
@@ -420,8 +484,21 @@ def install(args):
     root = validate_root(args.root, False)
     if (root / 'installation.json').exists():
         validate_root(root)
-        print('Existing installation preserved. Use update to upgrade; credentials and data are never replaced.')
+        marker = read_json(root / 'installation.json')
+        if getattr(args, 'resume', False):
+            if marker.get('install_complete') is True or (root / 'credentials.json').exists():
+                raise RuntimeError('This installation is already initialized. Use start or update; existing credentials are preserved.')
+            if not all((root / name).is_file() for name in ('compose.env', 'portal.env', 'compose.yaml', 'current/VERSION', 'scripts/manage.py')):
+                raise RuntimeError('Interrupted installation is incomplete; preserve the directory and inspect it before recovery')
+            if (root / 'current/VERSION').read_text().strip() != environment(root / 'compose.env')['PORTAL_VERSION']:
+                raise ValueError('Interrupted installation version mismatch; refusing unsafe resume')
+            print('Resuming the interrupted initial installation. Existing keys, data, IP and port are preserved: ' + marker['origin'], flush=True)
+            finish_install(root, args, marker)
+            return
+        print('Existing installation preserved. Use update to upgrade or start to run it. For an interrupted INITIAL install, rerun install with --resume; credentials and data are never replaced.')
         return
+    if getattr(args, 'resume', False):
+        raise RuntimeError('No marked interrupted installation found. Omit --resume for a new install.')
     if root.exists() and any(root.iterdir()):
         raise RuntimeError('Install directory is not empty; refusing to overwrite')
     port = args.port
@@ -447,28 +524,39 @@ def install(args):
     settings = {'PORTAL_VERSION': version, 'DB_PASSWORD': secrets.token_hex(32), 'PORTAL_PORT': str(port), 'BIND_IP': '['+bind_address+']' if ':' in bind_address else bind_address}
     env_write(root / 'compose.env', settings)
     env_write(root / 'portal.env', {'MASTER_KEY': secrets.token_hex(32), 'WORKER_TOKEN': secrets.token_hex(32), 'PUBLIC_ORIGIN': origin,'IP_ORIGIN':ip_origin})
-    marker = {'marker': MARKER, 'root': str(root), 'version': version, 'origin': origin, 'ip_origin':ip_origin, 'port': port}
+    marker = {'marker': MARKER, 'root': str(root), 'version': version, 'origin': origin, 'ip_origin':ip_origin, 'port': port, 'install_complete': False}
     write_private(root / 'installation.json', marker)
+    finish_install(root, args, marker)
+
+
+def finish_install(root, args, marker):
+    version = environment(root / 'compose.env')['PORTAL_VERSION']
     print('[3/4] Building and starting the project containers', flush=True)
     compose(root, 'up', '-d', '--build', timeout=1200)
     health(root, version)
     print('[4/4] Registering the administrator and background helper', flush=True)
-    password = getpass.getpass('Initial administrator password (12+ chars, empty = random): ') if args.ask_password else secrets.token_urlsafe(24)
-    if not password:
-        password = secrets.token_urlsafe(24)
-    if len(password.encode()) < 12:
-        raise ValueError('Administrator password must have at least 12 bytes. Use admin-reset after correcting it.')
-    compose(root, 'exec', '-T', 'app', '/app/portal', 'admin-create', args.admin_email, input=(password+'\n').encode())
-    write_private(root / 'credentials.json', {'email': args.admin_email, 'password': password})
+    admins = int(compose(root, 'exec', '-T', 'db', 'psql', '-U', 'portal', '-d', 'portal', '-At', '-c', "SELECT count(*) FROM customers WHERE role='admin'").strip())
+    if admins == 0:
+        password = getpass.getpass('Initial administrator password (12-256 bytes, empty = random): ') if args.ask_password else secrets.token_urlsafe(24)
+        if not password:
+            password = secrets.token_urlsafe(24)
+        if not 12 <= len(password.encode()) <= 256:
+            raise ValueError('Administrator password must have 12-256 bytes. Retry install --resume to continue.')
+        compose(root, 'exec', '-T', 'app', '/app/portal', 'admin-create', args.admin_email, input=(password+'\n').encode())
+        write_private(root / 'credentials.json', {'email': args.admin_email, 'password': password})
+    else:
+        print('An administrator already exists and was preserved. If the initial credential file is unavailable, use the explicit admin-reset command to recover access.', flush=True)
     if os.name == 'nt':
         # Remove inherited read access to the installation and all stored secrets.
         run(['icacls', str(root), '/inheritance:r', '/grant:r', '*S-1-5-32-544:(OI)(CI)F', '*S-1-5-18:(OI)(CI)F', '/T'])
     helper_install(root)
-    shutil.copy2(package / 'scripts/link-control.py', root / 'scripts/link-control.py')
-    print('Starhub Portal installed: ' + origin)
-    print('Credentials are stored only in ' + str(root / 'credentials.json') + ' (administrator access required).')
+    shutil.copy2(root / 'current/scripts/link-control.py', root / 'scripts/link-control.py')
+    write_private(root / 'installation.json', {**marker, 'install_complete': True})
+    print('Starhub Portal installed: ' + marker['origin'])
+    if (root / 'credentials.json').exists():
+        print('Credentials are stored only in ' + str(root / 'credentials.json') + ' (administrator access required).')
     print('Check address: python3 ' + str(root / 'scripts/manage.py') + ' status')
-    print('If a provider/host firewall is active, allow only the configured TCP entry port: ' + str(port))
+    print('If a provider/host firewall is active, allow only the configured TCP entry port: ' + str(marker['port']))
 
 
 def local(root, action, body):
@@ -768,9 +856,12 @@ def main():
     parser.add_argument('--allow-http', action='store_true', help='Explicitly permit HTTP access on your trusted network')
     parser.add_argument('--admin-email', default='admin@starhub.local')
     parser.add_argument('--ask-password', action='store_true')
+    parser.add_argument('--resume', action='store_true', help='Continue an interrupted initial install without regenerating keys or changing existing administrators')
     parser.add_argument('--version', default='latest')
     parser.add_argument('--purge-data', action='store_true')
     parser.add_argument('--confirm', default='')
+    if any(arg.startswith('--ask-') and arg != '--ask-password' for arg in sys.argv[1:]):
+        parser.error('Use --ask-password exactly; enter the password only at the subsequent private prompt, not in the option name.')
     args = parser.parse_args()
     if args.action == 'install':
         install(args)

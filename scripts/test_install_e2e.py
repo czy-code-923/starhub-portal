@@ -27,15 +27,39 @@ os.umask(0o077)
 with tempfile.TemporaryDirectory(prefix='starhub-compose-ci-') as tmp:
     config=Path(tmp)
     m.install_compose_plugin(config/'cli-plugins')
+    m.install_buildx_plugin(config/'cli-plugins')
     actual=m.run(['docker','--config',str(config),'compose','version'],timeout=30)
     assert b'Docker Compose version' in actual,actual
+    actual=m.run(['docker','--config',str(config),'buildx','version'],timeout=30)
+    assert m.buildx_version(actual)>=(0,17,0),actual
+    verified_plugins={p.name:p.read_bytes() for p in (config/'cli-plugins').iterdir() if p.is_file()}
     print('Verified official Compose plugin loads with isolated DOCKER_CONFIG.')
 with tempfile.TemporaryDirectory(prefix='starhub-portal-ci-',dir='/opt') as tmp:
     root=Path(tmp)/'installation'
     args=SimpleNamespace(root=root,port=18088,origin='http://127.0.0.1:18088',bind='127.0.0.1',admin_email='ci@example.test',ask_password=False,version=version)
     try:
-        with patch.object(m,'release',return_value=(version,bundle)),patch.object(m,'helper_install'):
+        original_compose=m.compose
+        def fail_first_build(directory,*command,**kwargs):
+            if command==('up','-d','--build'):
+                raise RuntimeError('Synthetic build failure before initial administrator creation')
+            return original_compose(directory,*command,**kwargs)
+        with patch.object(m,'release',return_value=(version,bundle)),patch.object(m,'helper_install'),patch.object(m,'compose',side_effect=fail_first_build):
+            try:m.install(args)
+            except RuntimeError as e:assert 'Synthetic build failure' in str(e)
+            else:raise AssertionError('Initial failure did not occur')
+        initial_keys=(root/'portal.env').read_bytes(),(root/'compose.env').read_bytes()
+        # All real project builds below use the exact newly downloaded plugins,
+        # including through the hardened helper's private Docker client state.
+        plugins=root/'docker-config/cli-plugins';plugins.mkdir(parents=True)
+        for name,data in verified_plugins.items():
+            (plugins/name).write_bytes(data);(plugins/name).chmod(0o755)
+        assert not (root/'credentials.json').exists()
+        args.resume=True
+        with patch.object(m,'helper_install'):
             m.install(args)
+        assert initial_keys==((root/'portal.env').read_bytes(),(root/'compose.env').read_bytes())
+        assert m.read_json(root/'installation.json')['install_complete'] is True
+        args.resume=False
         credentials=m.read_json(root/'credentials.json')
         opener=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
         def call(path,body=None,csrf=''):
@@ -53,6 +77,19 @@ with tempfile.TemporaryDirectory(prefix='starhub-portal-ci-',dir='/opt') as tmp:
                     assert res.status==200 and len(res.read())>100
         check_frontend()
         assert login['user']['role']=='admin' and login['user']['is_owner'] is True
+        # Legacy crash after admin-create but before saving credentials must not
+        # reset that owner or create another one when explicitly resumed.
+        saved=root/'saved-ci-credentials.json'
+        (root/'credentials.json').rename(saved)
+        marker=m.read_json(root/'installation.json');marker.pop('install_complete')
+        m.write_private(root/'installation.json',marker)
+        args.resume=True
+        with patch.object(m,'helper_install'):
+            m.install(args)
+        args.resume=False
+        assert not (root/'credentials.json').exists()
+        saved.rename(root/'credentials.json')
+        assert call('me')['csrf']==login['csrf']
         assert call('me')['csrf']==login['csrf']
         settings=call('admin/settings')
         assert not settings['secrets']['control_configured']
@@ -106,6 +143,6 @@ with tempfile.TemporaryDirectory(prefix='starhub-portal-ci-',dir='/opt') as tmp:
         with patch.object(m,'helper_install'):
             m.install(args)  # existing installation is never overwritten
         assert m.read_json(root/'credentials.json')==credentials
-        print('Fresh install, login, stable CSRF, local helper, preserved-data uninstall and restore passed.')
+        print('Fresh install, interrupted-install resume, existing-admin preservation, login, stable CSRF, local helper, preserved-data uninstall and restore passed.')
     finally:
         if (root/'compose.yaml').exists():m.compose(root,'down','--remove-orphans')

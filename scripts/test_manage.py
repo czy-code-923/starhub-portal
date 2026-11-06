@@ -15,6 +15,47 @@ spec.loader.exec_module(m)
 
 
 class InstallerSafety(unittest.TestCase):
+    def test_mistyped_password_flag_does_not_echo_its_value(self):
+        error=io.StringIO()
+        with patch('sys.argv',['manage.py','install','--ask-synthetic-secret']),patch('sys.stderr',error):
+            with self.assertRaises(SystemExit):m.main()
+        self.assertIn('Use --ask-password exactly',error.getvalue())
+        self.assertNotIn('synthetic-secret',error.getvalue())
+    def test_distribution_buildx_suffix_is_detected_and_upgraded(self):
+        self.assertEqual(m.buildx_version(b'github.com/docker/buildx 0.13.1+ds1 0.13.1+ds1-3'),(0,13,1))
+        with patch.object(m,'run',side_effect=[b'github.com/docker/buildx 0.13.1+ds1',b'github.com/docker/buildx v0.30.0']),patch.object(m,'install_buildx_plugin') as plugin,patch.object(m.os,'name','posix'):
+            m.check_buildx(True)
+            plugin.assert_called_once()
+        with patch.object(m,'run',return_value=b'github.com/docker/buildx 0.13.1+ds1'),patch.object(m,'install_buildx_plugin') as plugin:
+            with self.assertRaisesRegex(RuntimeError,'0.17.0'):m.check_buildx(False)
+            plugin.assert_not_called()
+    def test_initial_install_resume_preserves_keys_and_refuses_completed_install(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/'portal';root.mkdir()
+            marker={'marker':m.MARKER,'origin':'http://192.0.2.30:18088'}
+            m.write_private(root/'installation.json',marker)
+            m.env_write(root/'portal.env',{'MASTER_KEY':'fixture-secret'})
+            m.env_write(root/'compose.env',{'PORTAL_VERSION':'0.10.3'})
+            for name in ['compose.yaml','current/VERSION','scripts/manage.py']:
+                p=root/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('0.10.3')
+            args=SimpleNamespace(root=root,resume=True)
+            with patch.object(m,'check_docker'),patch.object(m,'finish_install') as finish,patch.object(m.os,'geteuid',return_value=0,create=True):
+                m.install(args)
+                finish.assert_called_once_with(root,args,marker)
+                self.assertEqual(m.environment(root/'portal.env')['MASTER_KEY'],'fixture-secret')
+                m.write_private(root/'credentials.json',{'email':'owner@example.test'})
+                with self.assertRaisesRegex(RuntimeError,'already initialized'):m.install(args)
+    def test_old_global_buildx_is_backed_up_before_atomic_replacement(self):
+        binary=b'\x7fELF-test-official-buildx'
+        asset='buildx-v0.30.0.linux-amd64'
+        info={'tag_name':'v0.30.0','assets':[{'name':asset,'browser_download_url':'https://github.com/docker/buildx/releases/download/v0.30.0/'+asset,'digest':'sha256:'+hashlib.sha256(binary).hexdigest()}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            directory=Path(tmp)/'plugins';directory.mkdir()
+            old=directory/'docker-buildx';old.write_bytes(b'old-plugin')
+            with patch.object(m,'architecture',return_value='amd64'),patch.object(m,'download',side_effect=[json.dumps(info).encode(),binary]):
+                m.install_buildx_plugin(directory)
+            self.assertEqual(old.read_bytes(),binary)
+            self.assertEqual([p.read_bytes() for p in (directory/'.starhub-backups').iterdir()],[b'old-plugin'])
     def test_missing_compose_is_added_without_reinstalling_engine(self):
         calls=[]
         def run(args,**kwargs):

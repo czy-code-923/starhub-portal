@@ -34,7 +34,7 @@ Telegram 核款需要专用机器人的独立轮询模式，并明确授权现�
 
 ## Linux 一键部署
 
-Debian / Ubuntu、RHEL / Rocky / AlmaLinux / Fedora 等主流 Linux，x86_64 / aarch64。安装器检查 Python 3.10+、可用的 Docker Engine 和 Compose 插件；缺少 Docker 时从 Docker 官方源安装。已有 Docker、仅缺 Compose 插件时，自动从 `docker/compose` 官方正式发布下载对应架构插件、验证 SHA-256 后安装到 `/usr/local/lib/docker/cli-plugins/docker-compose`，不重装或重启现有 Docker。已有插件不会被覆盖。不会重装宝塔、Nginx 或原有控制面。Linux 后台常驻与开机自启使用 systemd。
+Debian / Ubuntu、RHEL / Rocky / AlmaLinux / Fedora 等主流 Linux，x86_64 / aarch64。安装器检查 Python 3.10+、可用的 Docker Engine、Compose 插件和 Buildx 0.17.0+；缺少 Docker 时从 Docker 官方源安装。已有 Docker、仅缺 Compose 插件时，自动从 `docker/compose` 官方正式发布下载对应架构插件、验证 SHA-256 后安装到 `/usr/local/lib/docker/cli-plugins/docker-compose`。Buildx 缺失或过旧时，从 `docker/buildx` 官方正式发布获取并校验；若需替换同目录旧 Buildx，先保留旧插件备份。不重装或重启现有 Docker，不覆盖发行版包目录的插件，不重装宝塔、Nginx 或原有控制面。Linux 后台常驻与开机自启使用 systemd。
 
 ```sh
 (set -eu; f=$(mktemp); trap 'rm -f "$f"' EXIT HUP INT TERM; curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/czy-code-923/starhub-portal/main/scripts/install.sh -o "$f"; sh "$f")
@@ -186,7 +186,7 @@ python3 /opt/starhub-portal/scripts/manage.py update
 指定正式版本：
 
 ```sh
-python3 /opt/starhub-portal/scripts/manage.py update --version 0.10.3
+python3 /opt/starhub-portal/scripts/manage.py update --version 0.10.4
 ```
 
 助手未运行时：
@@ -250,6 +250,14 @@ python3 /opt/starhub-portal/scripts/manage.py domain-disable --allow-http
 自动链接不固定格式，由实际客户端请求头识别；管理端检查会验证至少一种完整配置格式，而不把服务端 HTTP 请求误认作用户客户端。AnyTLS 等协议可选择 Mihomo、sing-box 或 Hiddify；不支持协议的明确客户端仍会提示更换格式。sing-box 扫码请选择专属客户端格式。页面提供订阅链接与二维码，不提供配置下载。
 
 ## 安装失败排查
+
+`compose build requires buildx 0.17.0 or later` 表示 Buildx 过旧，0.10.4 的安装入口会先校验并补齐。若安装曾在第 3 步失败，已生成安装标记和密钥，请用 **续装**，不要删除目录：
+
+```sh
+(set -eu; f=$(mktemp); trap 'rm -f "$f"' EXIT HUP INT TERM; curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/czy-code-923/starhub-portal/main/scripts/install.sh -o "$f"; sh "$f" --resume --admin-email you@example.com --ask-password)
+```
+
+请修改邮箱；`--ask-password` 原样保留，之后在终端提示中输入密码，输入不回显。不要把密码写进选项名或命令行。续装保留现有版本文件、IP、端口、数据库密码和主密钥，补齐构建、管理员初始化与自启；已有管理员不会被修改。已完成安装会拒绝续装，应使用 `start` 或 `update`。续装旧版本成功后，可在后台更新到最新正式版。
 
 若 `docker --version` 正常而 `docker compose version` 提示 `compose is not a docker command`，说明只缺插件。0.10.3 安装器会自动补齐；重新执行上面的原一键安装命令即可。无需卸载 Docker 或删除数据。官方插件为安装时的正式版本，手动安装的依赖不会由面板自动升级；后续按 [Docker 官方说明](https://docs.docker.com/compose/install/linux/)维护。
 
