@@ -14,6 +14,27 @@ spec.loader.exec_module(m)
 
 
 class InstallerSafety(unittest.TestCase):
+    def test_services_start_preserves_existing_installation_and_checks_health(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/'portal';root.mkdir()
+            m.write_private(root/'installation.json',{'marker':m.MARKER})
+            m.write_private(root/'portal.env','fixture secret\n')
+            with patch.object(m,'enable_docker_boot') as boot,patch.object(m,'check_docker'),patch.object(m,'helper_install') as helper,patch.object(m,'compose') as compose,patch.object(m,'health',return_value={'status':'ok'}),patch.object(m.shutil,'which',return_value='/bin/systemctl'),patch.object(m.Path,'is_dir',return_value=True),patch.object(m.os,'geteuid',return_value=0,create=True):
+                m.service_control(root,'start')
+                boot.assert_called_once()
+                compose.assert_called_once_with(root,'up','-d')
+                helper.assert_called_once_with(root)
+            self.assertEqual((root/'portal.env').read_text(),'fixture secret\n')
+    def test_stop_never_stops_shared_docker_or_deletes_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/'portal';root.mkdir()
+            m.write_private(root/'installation.json',{'marker':m.MARKER})
+            with patch.object(m,'helper_stop') as helper,patch.object(m,'compose') as compose,patch.object(m,'run') as run,patch.object(m.shutil,'which',return_value='/bin/systemctl'),patch.object(m.Path,'is_dir',return_value=True),patch.object(m.os,'geteuid',return_value=0,create=True):
+                m.service_control(root,'stop')
+                helper.assert_called_once_with(disable=True)
+                compose.assert_called_once_with(root,'stop')
+                run.assert_not_called()
+            self.assertTrue((root/'installation.json').exists())
     def test_control_compatibility_only_requests_official_local_updater(self):
         from unittest.mock import Mock
         with tempfile.TemporaryDirectory() as tmp:

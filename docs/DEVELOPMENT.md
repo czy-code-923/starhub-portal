@@ -30,6 +30,8 @@ export TEST_DATABASE_URL='postgres://portal_test:local-test-password@127.0.0.1:5
 go vet ./...
 go test -race -count=1 ./...
 python3 scripts/test_manage.py
+sh -n scripts/install.sh
+python3 scripts/test_install_shell.py
 cd web && npm ci && npm test && npm run build
 ```
 

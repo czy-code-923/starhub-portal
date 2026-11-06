@@ -1,5 +1,9 @@
 # 安全与运维
 
+## 服务管理（0.10.2）
+
+Linux 在 root 终端执行 `python3 /opt/starhub-portal/scripts/manage.py start`，启动本项目并启用 systemd / Docker 开机自启。`stop` 停止本项目容器并禁用本项目助手；`restart` 重启本项目；`logs` 输出最近 100 条应用与数据库日志。关闭 SSH 不影响服务。不要在更新、备份恢复过程中停止服务。不停止共享 Docker，不删除数据。自定义目录需同时修改脚本路径并加 `--root /你的目录`。Windows 助手按管理员登录启动，Docker Desktop 需由其自身设置启用登录启动。
+
 - 数据库只在独立内部 Docker 网络中通信；无 PostgreSQL 公网映射。应用容器无 Docker socket、无特权、只读根文件系统、非 root 运行。宿主机助手是单独受限任务执行器。
 - 密码使用 Argon2id（19 MiB、2 次、1 并行），并发哈希限制为 2；应用连接池上限 4。初始应用限制 256 MiB，PostgreSQL 512 MiB / shared_buffers=32 MiB，按真实监控调整，不允许全局 Docker prune 或清理其他服务。
 - SMTP、星枢密钥、支付宝密钥使用每安装独立的 AES-GCM 主密钥加密；设置接口只返回是否配置和非秘密元数据。日志不打印请求体、Cookie、支付签名、完整订阅凭据或环境配置。

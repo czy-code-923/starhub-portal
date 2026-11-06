@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
-if [ "$(id -u)" -ne 0 ]; then echo 'Run with sudo sh install.sh [options]'; exit 1; fi
+if [ "$(id -u)" -ne 0 ]; then
+  if command -v sudo >/dev/null 2>&1; then exec sudo sh "$0" "$@"; fi
+  echo 'Root access required. Log in as root (or run su -), then rerun: sh install.sh [options]' >&2
+  exit 1
+fi
 if ! command -v python3 >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
   if command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y python3 ca-certificates curl;
   elif command -v dnf >/dev/null 2>&1; then dnf install -y python3 ca-certificates curl;

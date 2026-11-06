@@ -208,9 +208,62 @@ def check_docker(install=False):
             run(['sh', name], timeout=1200)
         finally:
             Path(name).unlink(missing_ok=True)
+    if install:
+        enable_docker_boot()
     if run(['docker', 'info', '--format', '{{.OSType}}'], timeout=20).strip() != b'linux':
         raise RuntimeError('Docker must be running in Linux containers mode')
     run(['docker', 'compose', 'version'], timeout=20)
+
+
+def enable_docker_boot():
+    # Start/enable the existing engine; never restart or stop a shared daemon.
+    if os.name != 'nt' and shutil.which('systemctl') and Path('/run/systemd/system').is_dir():
+        run(['systemctl', 'enable', '--now', 'docker.service'])
+
+
+def helper_stop(disable=False):
+    if os.name == 'nt':
+        with contextlib.suppress(RuntimeError):
+            run(['schtasks', '/End', '/TN', 'StarhubPortalHelper'])
+        if disable:
+            run(['schtasks', '/Change', '/TN', 'StarhubPortalHelper', '/DISABLE'])
+    elif shutil.which('systemctl') and Path('/run/systemd/system').is_dir():
+        if run(['systemctl', 'show', '--property=LoadState', '--value', 'starhub-portal-helper.service']).strip() == b'not-found':
+            return
+        run(['systemctl', 'disable' if disable else 'stop', *(['--now'] if disable else []), 'starhub-portal-helper.service'])
+    else:
+        raise RuntimeError('No running systemd scheduler. Manage the local helper with your OS service manager; no background process was started.')
+
+
+def service_control(root, action):
+    root = validate_root(root)
+    if os.name != 'nt':
+        if os.geteuid() != 0:
+            raise RuntimeError('Log in as root (or use sudo if installed) to manage services')
+        if not shutil.which('systemctl') or not Path('/run/systemd/system').is_dir():
+            raise RuntimeError('Automatic boot management requires a running systemd Linux host. Configure your OS service manager explicitly.')
+    if action == 'stop':
+        helper_stop(disable=True)
+    else:
+        enable_docker_boot()
+        check_docker()
+        if action == 'restart':
+            helper_stop()
+    compose(root, 'stop' if action == 'stop' else 'up', *([] if action == 'stop' else ['-d']))
+    if action == 'restart':
+        compose(root, 'restart')
+    gateway_file = root / 'gateway/compose.yaml'
+    if gateway_file.exists():
+        run(['docker', 'compose', '-f', gateway_file, 'stop' if action == 'stop' else 'up', *([] if action == 'stop' else ['-d'])], cwd=gateway_file.parent)
+        if action == 'restart':
+            run(['docker', 'compose', '-f', gateway_file, 'restart'], cwd=gateway_file.parent)
+    if action == 'stop':
+        print('Portal services stopped; data retained. Run start to restore services and boot startup. Shared Docker and other projects were not stopped.')
+    else:
+        data = health(root)
+        helper_install(root)
+        print('Portal healthy: ' + json.dumps(data, ensure_ascii=False))
+        print('Linux: Docker and the helper are enabled at boot; project containers restart unless explicitly stopped.' if os.name != 'nt' else 'Windows: containers restart with Docker Desktop; the helper runs after administrator sign-in. Enable Docker Desktop startup in its settings.')
 
 
 def detect_ip():
@@ -621,12 +674,12 @@ def uninstall(root, purge=False, confirm=''):
         print('Portal data removed. Docker, Baota, Starhub control plane and other services were preserved.')
     else:
         print('Portal stopped and uninstalled. Data and secrets retained at ' + str(root))
-        print('Restore: docker compose --env-file ' + str(root / 'compose.env') + ' -f ' + str(root / 'compose.yaml') + ' up -d; then reinstall the helper with repair-helper.')
+        print('Restore services and boot startup: python3 ' + str(root / 'scripts/manage.py') + ' start --root ' + str(root))
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['install', 'update', 'worker', 'status', 'credentials', 'admin-reset', 'uninstall', 'repair-helper', 'domain-enable', 'domain-disable'])
+    parser.add_argument('action', choices=['install', 'update', 'worker', 'status', 'credentials', 'admin-reset', 'uninstall', 'repair-helper', 'domain-enable', 'domain-disable', 'start', 'stop', 'restart', 'logs'])
     parser.add_argument('--root', type=Path, default=DEFAULT_ROOT)
     parser.add_argument('--port', type=int, default=18088)
     parser.add_argument('--bind', default='', choices=['','0.0.0.0','127.0.0.1','::','::1'])
@@ -645,6 +698,12 @@ def main():
         install(args)
         return
     root = validate_root(args.root)
+    if args.action in ('start', 'stop', 'restart'):
+        service_control(root, args.action)
+        return
+    if args.action == 'logs':
+        print(compose(root, 'logs', '--tail', '100', '--no-color', 'app', 'db').decode('utf-8', errors='replace'))
+        return
     if args.action in ('domain-enable','domain-disable'):
         marker=read_json(root/'installation.json')
         if args.action=='domain-enable' and not args.domain:raise ValueError('Use --domain your.example.com')

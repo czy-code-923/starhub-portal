@@ -49,6 +49,13 @@ with tempfile.TemporaryDirectory(prefix='starhub-portal-ci-',dir='/opt') as tmp:
         settings=call('admin/settings')
         assert not settings['secrets']['control_configured']
         assert call('admin/plans')==[]
+        # Detached lifecycle operations must preserve the same database/login.
+        with patch.object(m,'helper_stop'),patch.object(m,'helper_install'):
+            m.service_control(root,'stop')
+            m.service_control(root,'start')
+            assert call('me')['csrf']==login['csrf']
+            m.service_control(root,'restart')
+            assert call('me')['csrf']==login['csrf']
         # Reproduce the real helper's systemd restrictions; CLI-only updates do
         # not catch Buildx trying to write to the protected /root/.docker path.
         code="import sys;sys.path.insert(0,sys.argv[1]+'/scripts');import manage;from pathlib import Path;manage.compose(Path(sys.argv[1]),'build','app')"

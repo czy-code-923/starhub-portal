@@ -34,18 +34,20 @@ Telegram 核款需要专用机器人的独立轮询模式，并明确授权现�
 
 ## Linux 一键部署
 
-Debian / Ubuntu、RHEL / Rocky / AlmaLinux / Fedora 等主流 Linux，x86_64 / aarch64。安装器检查 Python 3.10+、可用的 Docker Engine 和 Compose v2；缺少 Docker 时从 Docker 官方源安装。不会重装宝塔、Nginx、Docker 或原有控制面。
+Debian / Ubuntu、RHEL / Rocky / AlmaLinux / Fedora 等主流 Linux，x86_64 / aarch64。安装器检查 Python 3.10+、可用的 Docker Engine 和 Compose v2；缺少 Docker 时从 Docker 官方源安装。不会重装宝塔、Nginx、Docker 或原有控制面。Linux 后台常驻与开机自启使用 systemd。
 
 ```sh
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/czy-code-923/starhub-portal/main/scripts/install.sh -o /tmp/install-starhub-portal.sh && sudo sh /tmp/install-starhub-portal.sh
+(set -eu; f=$(mktemp); trap 'rm -f "$f"' EXIT HUP INT TERM; curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/czy-code-923/starhub-portal/main/scripts/install.sh -o "$f"; sh "$f")
 ```
+
+root 登录可直接执行，无需安装 `sudo`；普通用户有 `sudo` 时安装器自动提权，否则明确提示先用 `su -` 或 SSH 登录 root。以下 Linux 管理命令均在 root 终端执行；普通用户可先 `sudo -i`（须已安装并授权）或 `su -`。
 
 自动检测本机 IPv4 / IPv6 并输出入口，不绑定域名也能使用。NAT 主机请显式填写外部可达 IP。以下命令让你输入本次部署 VPS 的地址和端口，不含固定生产 IP：
 
 ```sh
 printf '本台 VPS 的公网 IPv4 或 IPv6: '; read -r PORTAL_IP
 printf '面板端口（回车用 18088）: '; read -r PORTAL_PORT
-sudo sh /tmp/install-starhub-portal.sh --ip "$PORTAL_IP" --port "${PORTAL_PORT:-18088}" --admin-email you@example.com --ask-password
+(set -eu; f=$(mktemp); trap 'rm -f "$f"' EXIT HUP INT TERM; curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/czy-code-923/starhub-portal/main/scripts/install.sh -o "$f"; sh "$f" --ip "$PORTAL_IP" --port "${PORTAL_PORT:-18088}" --admin-email you@example.com --ask-password)
 ```
 
 默认目录 `/opt/starhub-portal`，独立 TCP 端口 `18088`；数据库不映射公网端口。`--ip` 只填 IP，不加协议、路径或端口；IPv6 自动生成带方括号的入口。`--port` 为 1024–65535，监听所有 IPv4（IPv6 地址则监听 IPv6）；可用 `--bind 127.0.0.1` 仅本机访问。主机或服务商防火墙须放行实际入口端口，脚本不会关闭防火墙。
@@ -70,10 +72,43 @@ $f=Join-Path $env:TEMP 'install-starhub-portal.ps1'; Invoke-WebRequest https://r
 $PortalIP=Read-Host '本机可达的 IPv4 或 IPv6'; & $f -PublicIP $PortalIP -Port 18088 -AdminEmail you@example.com -AskPassword
 ```
 
+## 后台常驻、开机自启与日志
+
+0.10.2 起，以下命令启动已有安装的应用、数据库、本站独立网关（如已创建）及更新助手，并启用 Linux 开机自启。服务运行在后台，关闭 SSH 不会退出，无需 `nohup`：
+
+```sh
+python3 /opt/starhub-portal/scripts/manage.py start
+```
+
+新安装自动启用 Docker 和更新助手；应用、数据库和本站独立网关使用 `restart: unless-stopped`。`start` 也可恢复保留数据卸载后的服务，不重新生成管理员或密钥。旧版先用下文 `update` 升到 0.10.2，再使用新增命令。不停止或重启其他项目使用的 Docker daemon。
+
+暂停本面板并关闭其自动启动（保留所有数据），之后用 `start` 恢复：
+
+```sh
+python3 /opt/starhub-portal/scripts/manage.py stop
+```
+
+重启本面板、查询入口状态、读取最近 100 条应用与数据库日志：
+
+```sh
+python3 /opt/starhub-portal/scripts/manage.py restart
+python3 /opt/starhub-portal/scripts/manage.py status
+python3 /opt/starhub-portal/scripts/manage.py logs
+```
+
+Linux 查看更新助手状态与最近日志：
+
+```sh
+systemctl status starhub-portal-helper.service --no-pager
+journalctl -u starhub-portal-helper.service -n 100 --no-pager
+```
+
+不要在版本更新或数据库恢复期间执行 `stop` / `restart`。没有运行 systemd 的容器环境会明确拒绝自动启动操作，请在宿主机部署或自行配置对应的服务管理器。Windows 在管理员 PowerShell 用 `python "$env:ProgramData\StarhubPortal\scripts\manage.py" start`；须已启动 Docker Desktop Linux 容器，助手在管理员登录后运行。Docker Desktop 的“登录时启动”需在其设置中开启，不承诺未登录时自动运行。
+
 ## 查询面板地址
 
 ```sh
-sudo python3 /opt/starhub-portal/scripts/manage.py status
+python3 /opt/starhub-portal/scripts/manage.py status
 ```
 
 分别显示 IP 入口、首选域名入口、实际运行版本和健康状态；无需域名或控制面令牌。自定义目录请加 `--root /你的安装目录`，Windows 使用 `python "$env:ProgramData\StarhubPortal\scripts\manage.py" status`。域名故障可使用列出的 IP＋端口；公网 HTTP 适合临时恢复入口，日常登录使用 HTTPS。
@@ -83,19 +118,19 @@ sudo python3 /opt/starhub-portal/scripts/manage.py status
 不是宝塔令牌，也不是星枢控制面令牌。仅在本机管理员终端执行，勿公开输出：
 
 ```sh
-sudo python3 /opt/starhub-portal/scripts/manage.py credentials
+python3 /opt/starhub-portal/scripts/manage.py credentials
 ```
 
 恢复管理员密码并注销该管理员所有会话：
 
 ```sh
-sudo python3 /opt/starhub-portal/scripts/manage.py admin-reset --admin-email you@example.com
+python3 /opt/starhub-portal/scripts/manage.py admin-reset --admin-email you@example.com
 ```
 
 ## Linux 一键卸载（保留数据）
 
 ```sh
-sudo python3 /opt/starhub-portal/scripts/manage.py uninstall
+python3 /opt/starhub-portal/scripts/manage.py uninstall
 ```
 
 只移除本项目容器、网络和自己的更新助手。保留订单、用户、配置、主密钥和备份；不卸载 Docker，不清理其他容器，不删除星枢或宝塔。
@@ -103,7 +138,7 @@ sudo python3 /opt/starhub-portal/scripts/manage.py uninstall
 彻底删除本购买面板数据，**无法撤销**，与普通卸载分开执行：
 
 ```sh
-sudo python3 /opt/starhub-portal/scripts/manage.py uninstall --purge-data --confirm DELETE-PORTAL-DATA
+python3 /opt/starhub-portal/scripts/manage.py uninstall --purge-data --confirm DELETE-PORTAL-DATA
 ```
 
 ## Windows 卸载（保留数据）
@@ -145,19 +180,19 @@ python "$env:ProgramData\StarhubPortal\scripts\manage.py" uninstall --purge-data
 命令行更新：
 
 ```sh
-sudo python3 /opt/starhub-portal/scripts/manage.py update
+python3 /opt/starhub-portal/scripts/manage.py update
 ```
 
 指定正式版本：
 
 ```sh
-sudo python3 /opt/starhub-portal/scripts/manage.py update --version 0.10.1
+python3 /opt/starhub-portal/scripts/manage.py update --version 0.10.2
 ```
 
 助手未运行时：
 
 ```sh
-sudo python3 /opt/starhub-portal/scripts/manage.py repair-helper
+python3 /opt/starhub-portal/scripts/manage.py repair-helper
 ```
 
 ## 手动构建与本地开发
@@ -191,19 +226,19 @@ sudo python3 /opt/starhub-portal/scripts/manage.py repair-helper
 查询当前购买面板地址及版本：
 
 ```bash
-sudo python3 /opt/starhub-portal/scripts/manage.py status
+python3 /opt/starhub-portal/scripts/manage.py status
 ```
 
 开启购买面板域名（请把示例域名改成你的域名；需 DNS 已指向本机，并准备证书或让独立 Caddy 自动签发）：
 
 ```bash
-sudo python3 /opt/starhub-portal/scripts/manage.py domain-enable --domain buy.example.com
+python3 /opt/starhub-portal/scripts/manage.py domain-enable --domain buy.example.com
 ```
 
 关闭购买面板域名，切换为安装时记录的 IP＋端口（HTTP 为明文，因此需明确添加参数）：
 
 ```bash
-sudo python3 /opt/starhub-portal/scripts/manage.py domain-disable --allow-http
+python3 /opt/starhub-portal/scripts/manage.py domain-disable --allow-http
 ```
 
 命令保存设置并排队入口任务，可在后台“版本与更新”查看结果。仅修改本项目拥有的网关，不接管其他宝塔网站；回环部署不会自动扩大到公网监听，须通过原 SSH 隧道管理。已启用官方支付宝 HTTPS 回调时，先在后台停用该渠道再切换 HTTP；个人收款码不受此限制。Windows 用 `python "$env:ProgramData/StarhubPortal/scripts/manage.py"` 调用相同行为，或按自定义 `--root` 路径；Docker Desktop 需使用 Linux 容器模式。

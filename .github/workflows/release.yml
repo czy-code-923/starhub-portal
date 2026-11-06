@@ -38,6 +38,8 @@ jobs:
           go vet ./...
           go test -race -count=1 ./...
           python3 scripts/test_manage.py
+          sh -n scripts/install.sh
+          python3 scripts/test_install_shell.py
           python3 scripts/test_domain_bridge.py
           python3 -m py_compile scripts/manage.py scripts/package.py scripts/domain_bridge.py
           cd web
