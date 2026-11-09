@@ -9,6 +9,8 @@ import (
 )
 
 type Settings struct {
+	CatalogGuideTitle string   `json:"catalog_guide_title"`
+	CatalogGuideBody  string   `json:"catalog_guide_body"`
 	Theme             string   `json:"theme"`
 	BackgroundDesktop string   `json:"background_desktop"`
 	BackgroundMobile  string   `json:"background_mobile"`
@@ -126,15 +128,27 @@ func (a *App) public(w http.ResponseWriter, r *http.Request) error {
 	if e != nil {
 		return e
 	}
+	guideTitle, guideBody := s.catalogGuide()
 	var announcements json.RawMessage
 	announcements, e = jsonRows(r.Context(), a.DB, `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,title,body,images,pinned,pin_order,created_at FROM announcements WHERE enabled ORDER BY pinned DESC,pin_order,created_at DESC,id LIMIT 100)x`)
 	if e != nil {
 		return e
 	}
-	send(w, 200, map[string]any{"title": s.Title, "theme": s.Theme, "background_desktop": s.BackgroundDesktop, "background_mobile": s.BackgroundMobile, "background_dim": s.BackgroundDim, "registration_mode": s.RegistrationMode, "approval_required": s.Approval, "show_catalog": s.ShowCatalog, "traffic_unit": s.TrafficUnit, "email_ready": secrets.SMTPHost != "" || a.Mail != nil, "alipay_ready": secrets.Alipay != nil && secrets.Alipay.Enabled, "announcements": announcements, "version": Version})
+	send(w, 200, map[string]any{"title": s.Title, "catalog_guide_title": guideTitle, "catalog_guide_body": guideBody, "theme": s.Theme, "background_desktop": s.BackgroundDesktop, "background_mobile": s.BackgroundMobile, "background_dim": s.BackgroundDim, "registration_mode": s.RegistrationMode, "approval_required": s.Approval, "show_catalog": s.ShowCatalog, "traffic_unit": s.TrafficUnit, "email_ready": secrets.SMTPHost != "" || a.Mail != nil, "alipay_ready": secrets.Alipay != nil && secrets.Alipay.Enabled, "announcements": announcements, "version": Version})
 	return nil
 }
 func raw(v any) []byte { b, _ := json.Marshal(v); return b }
+
+func (s Settings) catalogGuide() (string, string) {
+	title, body := s.CatalogGuideTitle, s.CatalogGuideBody
+	if strings.TrimSpace(title) == "" {
+		title = "购买与续费说明"
+	}
+	if strings.TrimSpace(body) == "" {
+		body = "新购套餐独立开通订阅；有效期内续费不重复占用名额，过期或删除后释放。过期后需有空位且在 3 天内续费。余量每 10 秒更新，下单时再次核验。"
+	}
+	return title, body
+}
 func includes(xs []string, s string) bool {
 	for _, x := range xs {
 		if x == s {

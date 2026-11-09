@@ -340,6 +340,7 @@ func (a *App) adminSettings(w http.ResponseWriter, r *http.Request) error {
 	}
 	if r.Method == "GET" {
 		var payment any
+		s.CatalogGuideTitle, s.CatalogGuideBody = s.catalogGuide()
 		if v := secrets.Alipay; v != nil {
 			payment = map[string]any{"enabled": v.Enabled, "sandbox": v.Sandbox, "app_id": v.AppID, "seller_id": v.SellerID, "mobile": v.Mobile, "private_configured": v.PrivateKey != "", "public_configured": v.PublicKey != ""}
 		}
@@ -359,6 +360,9 @@ func (a *App) adminSettings(w http.ResponseWriter, r *http.Request) error {
 		return e
 	}
 	n := b.Settings
+	if !cleanText(n.CatalogGuideTitle, 80) || !cleanText(n.CatalogGuideBody, 6000) {
+		return bad("套餐说明标题最多 80 字，正文最多 6000 字")
+	}
 	if n.Theme != "" && !includes([]string{"mint", "ocean", "rose", "midnight"}, n.Theme) || n.BackgroundDim < 0 || n.BackgroundDim > 85 {
 		return bad("主题或背景遮罩设置无效")
 	}

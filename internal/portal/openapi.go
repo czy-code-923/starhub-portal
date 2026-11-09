@@ -18,7 +18,7 @@ func (a *App) openapi(w http.ResponseWriter, r *http.Request) error {
 		}
 		entry[item.method] = map[string]any{"summary": item.summary, "x-role": item.role, "responses": map[string]any{"200": map[string]string{"description": "Success"}, "400": map[string]string{"description": "Invalid typed request"}, "401": map[string]string{"description": "Authentication required"}, "403": map[string]string{"description": "Role, CSRF or ownership denied"}, "409": map[string]string{"description": "Version, coupon or order conflict"}}}
 	}
-	for path, methods := range map[string][]string{"settings": {"get", "put"}, "categories": {"get", "post", "put"}, "plans": {"get", "post", "put", "delete"}, "plans/restore": {"post"}, "coupons": {"get", "post", "put"}, "invitations": {"get", "post", "put"}, "customers": {"get", "put", "delete"}, "customers/restore": {"post"}, "client-help": {"put"}, "orders": {"get"}, "jobs": {"get", "post"}, "announcements": {"get", "post", "put"}, "tickets": {"get"}, "audit": {"get"}, "control-groups": {"get"}, "capacity": {"get"}, "service-migrations": {"get"}, "record-retention": {"get", "post"}, "version": {"get", "post"}, "payment-methods": {"get", "put"}, "payment-methods/{id}/image": {"get"}, "administrators": {"get", "post", "put", "delete"}, "administrators/restore": {"post"}, "demo-plans": {"post"}, "manual-payments": {"get"}, "manual-payments/{id}": {"get", "put"}, "manual-payments/{id}/redpacket": {"get"}, "telegram": {"get", "put"}, "telegram/check": {"post"}, "telegram/commands": {"post"}, "telegram/retry": {"post"}, "gateway/retry": {"post"}} {
+	for path, methods := range map[string][]string{"overview": {"get"}, "settings": {"get", "put"}, "categories": {"get", "post", "put"}, "plans": {"get", "post", "put", "delete"}, "plans/restore": {"post"}, "coupons": {"get", "post", "put"}, "invitations": {"get", "post", "put"}, "customers": {"get", "put", "delete"}, "customers/restore": {"post"}, "client-help": {"put"}, "orders": {"get"}, "jobs": {"get", "post"}, "announcements": {"get", "post", "put"}, "tickets": {"get"}, "audit": {"get"}, "control-groups": {"get"}, "capacity": {"get"}, "service-migrations": {"get"}, "record-retention": {"get", "post"}, "version": {"get", "post"}, "payment-methods": {"get", "put"}, "payment-methods/{id}/image": {"get"}, "administrators": {"get", "post", "put", "delete"}, "administrators/restore": {"post"}, "demo-plans": {"post"}, "manual-payments": {"get"}, "manual-payments/{id}": {"get", "put"}, "manual-payments/{id}/redpacket": {"get"}, "telegram": {"get", "put"}, "telegram/check": {"post"}, "telegram/commands": {"post"}, "telegram/retry": {"post"}, "gateway/retry": {"post"}} {
 		entry := map[string]any{}
 		for _, method := range methods {
 			role := adminDocRole(path)
@@ -29,6 +29,8 @@ func (a *App) openapi(w http.ResponseWriter, r *http.Request) error {
 		}
 		paths["/portal/v1/admin/"+path] = entry
 	}
+	paths["/portal/v1/admin/overview"].(map[string]any)["get"].(map[string]any)["summary"] = "Distinct current customers and valid paid buyers, historical buyers, unchecked state and uncapped pending orders; owner only"
+	paths["/portal/v1/admin/settings"].(map[string]any)["put"].(map[string]any)["description"] = "Includes catalog_guide_title (80 characters) and catalog_guide_body (6000 characters, plain text). Empty values restore defaults; optimistic settings version and CSRF required. Shared by public, customer and admin catalogs."
 	paths["/portal/v1/health"] = map[string]any{"get": map[string]any{"summary": "Database health and installed version", "x-role": "public", "responses": map[string]any{"200": map[string]string{"description": "Healthy"}}}}
 	for _, v := range paths {
 		entry := v.(map[string]any)
@@ -68,7 +70,7 @@ func (a *App) openapi(w http.ResponseWriter, r *http.Request) error {
 
 func adminDocRole(path string) string {
 	switch path {
-	case "telegram", "administrators/restore", "telegram/check", "telegram/commands", "telegram/retry", "gateway/retry", "settings", "version", "capacity", "service-migrations", "payment-methods", "payment-methods/{id}/image", "administrators", "demo-plans":
+	case "overview", "telegram", "administrators/restore", "telegram/check", "telegram/commands", "telegram/retry", "gateway/retry", "settings", "version", "capacity", "service-migrations", "payment-methods", "payment-methods/{id}/image", "administrators", "demo-plans":
 		return "owner"
 	case "plans/restore":
 		return "admin:plans"

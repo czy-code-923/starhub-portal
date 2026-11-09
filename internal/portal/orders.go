@@ -88,7 +88,8 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request) error {
 	if e = rows.Err(); e != nil {
 		return e
 	}
-	send(w, 200, map[string]any{"categories": cats, "plans": plans, "stock_checked_at": a.now(), "stock_synced": healthErr == nil})
+	guideTitle, guideBody := s.catalogGuide()
+	send(w, 200, map[string]any{"categories": cats, "plans": plans, "catalog_guide_title": guideTitle, "catalog_guide_body": guideBody, "stock_checked_at": a.now(), "stock_synced": healthErr == nil})
 	return nil
 }
 func (a *App) calculate(r *http.Request, tx pgx.Tx, b Buy) (Quote, error) {

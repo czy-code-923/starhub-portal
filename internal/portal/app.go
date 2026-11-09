@@ -28,7 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const Version = "0.11.0"
+const Version = "0.11.1"
 const Repository = "czy-code-923/starhub-portal"
 
 //go:embed migrations/*.sql
@@ -353,6 +353,7 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("POST /portal/v1/admin/telegram/commands", a.auth(a.telegramCommands, true))
 	m.HandleFunc("PUT /portal/v1/admin/manual-payments/{id}", a.auth(a.reviewPayments, true))
 	m.HandleFunc("POST /portal/v1/admin/demo-plans", a.auth(a.demoPlans, true))
+	m.HandleFunc("GET /portal/v1/admin/overview", a.auth(a.overview, true))
 
 	m.HandleFunc("POST /portal/v1/auth/logout", a.auth(a.logout, false))
 	m.HandleFunc("GET /portal/v1/catalog", wrap(a.catalog))

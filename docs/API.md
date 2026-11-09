@@ -1,5 +1,9 @@
 # API 与业务状态
 
+0.11.1：`GET /admin/overview` 仅主管理员可读，返回 `current_users`（未删除的客户账号，含停用/待验证，排除管理员）、`current_buying_users`（仍有未过期、未停用的已付独立服务，按活跃客户去重，当月额度耗尽仍计入）、`historical_buying_users`（未删除且有已付订单的客户）、`unchecked_buying_users`（有未知状态已付服务的活跃客户）、`pending_orders`（全量待处理订单）、`recent_paid_amount`（最近 300 条订单中已付金额，分）和 `services_checked_at`。直接数据库聚合，不受客户/订单管理列表条数限制。远端不可用时保留最近成功状态并尽可能提供 `sync_warning`；未知状态不会算成有效购买用户。
+
+`PUT /admin/settings` 的 settings 新增 `catalog_guide_title`（至多 80 字）及 `catalog_guide_body`（至多 6000 字，可换行），沿用主管理员、CSRF、乐观版本及审计校验；留空恢复内置默认。`GET /admin/settings`、`GET /public` 和 `GET /catalog` 返回有效说明文字。游客、用户和管理员套餐预览共用，无 HTML 执行；公开可见套餐页每 10 秒刷新。仅控制展示文案，不修改购买、续费、计费或名额规则；无新增数据库迁移，兼容原 settings JSON。
+
 0.11.0 图片：`POST /media` 使用 `{scope:"ticket"|"announcement"|"background",image_data:"data:image/...;base64,..."}`，返回 id/url；需会话和 CSRF，公告用途需 announcements 权限，背景仅主管理员。每张 PNG/JPEG ≤1 MiB，解码前有请求大小及并发上限。`GET /media/{id}`：公开公告及当前背景允许游客读取；工单仅本人或 support 管理员，未授权不返回图片内容。`DELETE /media/{id}` 仅删除自己未引用图片，已引用返回 409。工单新建/回复和公告保存新增 `images: string[]`（最多 6 个上传 ID），旧请求可省略。
 
 `PUT /admin/settings` 新增 theme（mint/ocean/rose/midnight）、background_desktop、background_mobile、background_dim（0–85）。背景只接受本站上传地址或 HTTPS 图片 URL，url(...) 包装会规范化，不执行 CSS，不由服务端请求远程图片。`GET /public` 公开这些非秘密外观字段，公告返回图片 ID，不内嵌二进制。
