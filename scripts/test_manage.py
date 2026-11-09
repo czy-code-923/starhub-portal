@@ -15,6 +15,14 @@ spec.loader.exec_module(m)
 
 
 class InstallerSafety(unittest.TestCase):
+    def test_large_restore_uses_file_stdin_without_loading_backup_into_memory(self):
+        from subprocess import CompletedProcess
+        with tempfile.TemporaryFile() as backup,patch.object(m.subprocess,'run',return_value=CompletedProcess([],0,b'',b'')) as execute:
+            backup.write(b'synthetic-backup');backup.seek(0)
+            m.run(['docker','compose','exec','-T','db','pg_restore'],input=backup)
+            self.assertIs(execute.call_args.kwargs['stdin'],backup)
+            self.assertNotIn('input',execute.call_args.kwargs)
+            self.assertEqual(backup.tell(),0)
     def test_mistyped_password_flag_does_not_echo_its_value(self):
         error=io.StringIO()
         with patch('sys.argv',['manage.py','install','--ask-synthetic-secret']),patch('sys.stderr',error):

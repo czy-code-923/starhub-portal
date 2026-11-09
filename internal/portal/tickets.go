@@ -18,13 +18,14 @@ func (a *App) tickets(w http.ResponseWriter, r *http.Request) error {
 		return e
 	}
 	var b struct {
-		Subject string `json:"subject"`
-		Body    string `json:"body"`
+		Subject string   `json:"subject"`
+		Body    string   `json:"body"`
+		Images  []string `json:"images"`
 	}
 	if e := decode(w, r, &b); e != nil {
 		return e
 	}
-	if strings.TrimSpace(b.Subject) == "" || !cleanText(b.Subject, 120) || strings.TrimSpace(b.Body) == "" || !cleanText(b.Body, 6000) {
+	if strings.TrimSpace(b.Subject) == "" || !cleanText(b.Subject, 120) || strings.TrimSpace(b.Body) == "" && len(b.Images) == 0 || !cleanText(b.Body, 6000) {
 		return bad("工单标题或内容无效")
 	}
 	tx, e := a.DB.Begin(r.Context())
@@ -32,11 +33,17 @@ func (a *App) tickets(w http.ResponseWriter, r *http.Request) error {
 		return e
 	}
 	defer tx.Rollback(r.Context())
+	if e = lock(r.Context(), tx); e != nil {
+		return e
+	}
+	if e = validateMediaRefs(r.Context(), tx, current(r), "ticket", b.Images, ""); e != nil {
+		return e
+	}
 	id := ID()
 	if _, e = tx.Exec(r.Context(), "INSERT INTO tickets(id,customer_id,subject) VALUES($1,$2,$3)", id, current(r).ID, b.Subject); e != nil {
 		return e
 	}
-	if _, e = tx.Exec(r.Context(), "INSERT INTO ticket_messages(id,ticket_id,customer_id,body) VALUES($1,$2,$3,$4)", ID(), id, current(r).ID, b.Body); e != nil {
+	if _, e = tx.Exec(r.Context(), "INSERT INTO ticket_messages(id,ticket_id,customer_id,body,images) VALUES($1,$2,$3,$4,$5)", ID(), id, current(r).ID, b.Body, mediaList(b.Images)); e != nil {
 		return e
 	}
 	if e = tx.Commit(r.Context()); e != nil {
@@ -52,7 +59,7 @@ func (a *App) ticket(w http.ResponseWriter, r *http.Request) error {
 		return e
 	}
 	if r.Method == "GET" {
-		data, e := jsonRows(r.Context(), a.DB, `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT m.id,m.body,m.created_at,c.role,c.name FROM ticket_messages m JOIN customers c ON c.id=m.customer_id WHERE m.ticket_id=$1 ORDER BY m.created_at,m.id)x`, r.PathValue("id"))
+		data, e := jsonRows(r.Context(), a.DB, `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT m.id,m.body,m.images,m.created_at,c.role,c.name FROM ticket_messages m JOIN customers c ON c.id=m.customer_id WHERE m.ticket_id=$1 ORDER BY m.created_at,m.id)x`, r.PathValue("id"))
 		if e != nil {
 			return e
 		}
@@ -60,13 +67,14 @@ func (a *App) ticket(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 	var b struct {
-		Body  string `json:"body"`
-		Close bool   `json:"close"`
+		Body   string   `json:"body"`
+		Close  bool     `json:"close"`
+		Images []string `json:"images"`
 	}
 	if e := decode(w, r, &b); e != nil {
 		return e
 	}
-	if !cleanText(b.Body, 6000) || b.Body == "" && !b.Close {
+	if !cleanText(b.Body, 6000) || strings.TrimSpace(b.Body) == "" && !b.Close && len(b.Images) == 0 {
 		return bad("回复内容无效")
 	}
 	tx, e := a.DB.Begin(r.Context())
@@ -74,8 +82,14 @@ func (a *App) ticket(w http.ResponseWriter, r *http.Request) error {
 		return e
 	}
 	defer tx.Rollback(r.Context())
-	if b.Body != "" {
-		if _, e = tx.Exec(r.Context(), "INSERT INTO ticket_messages(id,ticket_id,customer_id,body) VALUES($1,$2,$3,$4)", ID(), r.PathValue("id"), u.ID, b.Body); e != nil {
+	if e = lock(r.Context(), tx); e != nil {
+		return e
+	}
+	if e = validateMediaRefs(r.Context(), tx, u, "ticket", b.Images, ""); e != nil {
+		return e
+	}
+	if b.Body != "" || len(b.Images) > 0 {
+		if _, e = tx.Exec(r.Context(), "INSERT INTO ticket_messages(id,ticket_id,customer_id,body,images) VALUES($1,$2,$3,$4,$5)", ID(), r.PathValue("id"), u.ID, b.Body, mediaList(b.Images)); e != nil {
 			return e
 		}
 	}

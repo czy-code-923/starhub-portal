@@ -59,7 +59,8 @@ class CommandFailure(RuntimeError):
 
 
 def run(args, cwd=None, input=None, timeout=600, output=None, env=None):
-    result = subprocess.run([str(x) for x in args], cwd=cwd, input=input, stdout=output or subprocess.PIPE,
+    payload = {'stdin': input} if hasattr(input, 'read') else {'input': input}
+    result = subprocess.run([str(x) for x in args], cwd=cwd, **payload, stdout=output or subprocess.PIPE,
                             stderr=subprocess.PIPE, timeout=timeout, check=False, env=env)
     if result.returncode:
         # Persist diagnostics locally; redact values from this installation's secret files.
@@ -583,7 +584,7 @@ def rollback(root, state):
     shutil.copy2(root / 'current' / 'compose.yaml', root / 'compose.yaml')
     shutil.copy2(root / 'current/compose.yaml', root / 'compose.yaml')
     with open(backup, 'rb') as data:
-        compose(root, 'exec', '-T', 'db', 'pg_restore', '-U', 'portal', '-d', 'portal', '--clean', '--if-exists', '--no-owner', '--no-acl', input=data.read())
+        compose(root, 'exec', '-T', 'db', 'pg_restore', '-U', 'portal', '-d', 'portal', '--clean', '--if-exists', '--no-owner', '--no-acl', input=data)
     compose(root, 'up', '-d', '--build', timeout=1200)
     health(root, state['env']['PORTAL_VERSION'])
 

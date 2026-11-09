@@ -1,0 +1,8 @@
+<script setup lang="ts">
+import {ref} from 'vue';import {imageData,type RequestFn} from './media';
+const props=withDefaults(defineProps<{modelValue:string[],scope:'ticket'|'announcement'|'background',request:RequestFn,max?:number}>(),{max:6});
+const emit=defineEmits<{ 'update:modelValue':[value:string[]],busy:[value:boolean] }>();
+const loading=ref(false),error=ref('');
+async function upload(event:Event){const input=event.target as HTMLInputElement;const files=Array.from(input.files||[]);if(!files.length)return;error.value='';if(props.modelValue.length+files.length>props.max){error.value=`最多上传 ${props.max} 张图片`;input.value='';return}loading.value=true;emit('busy',true);try{const ids=[...props.modelValue];for(const file of files){const result=await props.request('media','POST',{scope:props.scope,image_data:await imageData(file)});ids.push(result.id);emit('update:modelValue',[...ids])}}catch(e){error.value=String(e)}finally{loading.value=false;emit('busy',false);input.value=''}}
+</script>
+<template><div class="image-picker"><div class="image-picker-head"><label class="upload-button">{{loading?'正在上传…':'＋ 上传图片'}}<input type="file" accept="image/png,image/jpeg" :multiple="max>1" :disabled="loading||modelValue.length>=max" @change="upload"></label><small class="muted">PNG / JPEG · 自动压缩至 1 MiB 以内 · {{modelValue.length}}/{{max}}</small></div><p v-if="error" class="alert error" role="alert">{{error}}</p><div class="image-thumbnails"><figure v-for="(id,i) in modelValue" :key="id"><img :src="'/portal/v1/media/'+id" alt="已上传图片" loading="lazy" referrerpolicy="no-referrer"><button type="button" :disabled="loading" @click="emit('update:modelValue',modelValue.filter((_,n)=>n!==i))" :aria-label="'移除图片 '+(i+1)">×</button></figure></div></div></template>

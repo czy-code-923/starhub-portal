@@ -1,0 +1,4 @@
+<script setup lang="ts">
+import {ref,onMounted,onUnmounted} from 'vue';defineProps<{images?:string[]}>();const selected=ref('');const close=(e:KeyboardEvent)=>{if(e.key==='Escape')selected.value=''};onMounted(()=>window.addEventListener('keydown',close));onUnmounted(()=>window.removeEventListener('keydown',close));
+</script>
+<template><div v-if="images?.length" class="image-gallery"><button type="button" v-for="(id,i) in images" :key="id" @click="selected=id" :aria-label="'查看图片 '+(i+1)"><img :src="'/portal/v1/media/'+id" :alt="'附件 '+(i+1)" loading="lazy" referrerpolicy="no-referrer"></button></div><Teleport to="body"><div v-if="selected" class="image-lightbox" role="dialog" aria-modal="true" aria-label="查看图片" @click.self="selected=''"><button type="button" @click="selected=''" aria-label="关闭图片">×</button><img :src="'/portal/v1/media/'+selected" alt="附件原图" referrerpolicy="no-referrer"></div></Teleport></template>

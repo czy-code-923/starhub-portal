@@ -1,5 +1,9 @@
 # API 与业务状态
 
+0.11.0 图片：`POST /media` 使用 `{scope:"ticket"|"announcement"|"background",image_data:"data:image/...;base64,..."}`，返回 id/url；需会话和 CSRF，公告用途需 announcements 权限，背景仅主管理员。每张 PNG/JPEG ≤1 MiB，解码前有请求大小及并发上限。`GET /media/{id}`：公开公告及当前背景允许游客读取；工单仅本人或 support 管理员，未授权不返回图片内容。`DELETE /media/{id}` 仅删除自己未引用图片，已引用返回 409。工单新建/回复和公告保存新增 `images: string[]`（最多 6 个上传 ID），旧请求可省略。
+
+`PUT /admin/settings` 新增 theme（mint/ocean/rose/midnight）、background_desktop、background_mobile、background_dim（0–85）。背景只接受本站上传地址或 HTTPS 图片 URL，url(...) 包装会规范化，不执行 CSS，不由服务端请求远程图片。`GET /public` 公开这些非秘密外观字段，公告返回图片 ID，不内嵌二进制。
+
 前缀 `/portal/v1`。管理员登录后可查询 `/openapi`。购买用户与管理员使用 HttpOnly、SameSite=Lax 会话 Cookie；所有写入需要 `X-CSRF-Token`，从 `/auth/login` 或 `/me` 取得。令牌不保存到 localStorage。注册、重置和支付宝签名回调为各自的独立认证入口。
 
 购买用户：`GET /catalog`、`POST /checkout/quote`、`POST /orders`、`GET /orders`、`GET /orders/{id}`、`POST /orders/{id}/payment`、`POST /orders/{id}/cancel`；`GET /me/service`、`GET /me/subscription/{share|qr|content|nodes|check}?client=mihomo`、`GET /me/devices`、`GET /clients`；`GET/POST /tickets`、`GET/POST /tickets/{id}`。

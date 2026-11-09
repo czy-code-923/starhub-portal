@@ -28,7 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const Version = "0.10.4"
+const Version = "0.11.0"
 const Repository = "czy-code-923/starhub-portal"
 
 //go:embed migrations/*.sql
@@ -378,6 +378,9 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("POST /portal/v1/tickets", a.auth(a.tickets, false))
 	m.HandleFunc("GET /portal/v1/tickets/{id}", a.auth(a.ticket, false))
 	m.HandleFunc("POST /portal/v1/tickets/{id}", a.auth(a.ticket, false))
+	m.HandleFunc("POST /portal/v1/media", a.auth(a.mediaUpload, false))
+	m.HandleFunc("GET /portal/v1/media/{id}", wrap(a.mediaImage))
+	m.HandleFunc("DELETE /portal/v1/media/{id}", a.auth(a.mediaDelete, false))
 	for _, path := range []string{"settings", "categories", "plans", "coupons", "invitations", "customers", "orders", "jobs", "announcements", "tickets", "audit", "control-groups", "version", "capacity", "service-migrations"} {
 		p := path
 		for _, method := range []string{"GET", "POST", "PUT", "DELETE"} {
@@ -417,7 +420,7 @@ func (a *App) Handler() http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self' https://openapi.alipay.com https://openapi-sandbox.dl.alipaydev.com")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self' https://openapi.alipay.com https://openapi-sandbox.dl.alipaydev.com")
 		if r.Method != "GET" && r.Method != "HEAD" && r.URL.Path != "/portal/v1/payments/alipay/notify" {
 			if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
 				send(w, 403, map[string]string{"error": "请求来源不匹配"})

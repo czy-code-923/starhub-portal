@@ -43,7 +43,7 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request) error {
 			return Problem{401, "请登录后查看套餐"}
 		}
 		var valid bool
-		if e = a.DB.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM sessions s JOIN customers c ON c.id=s.customer_id WHERE s.token_hash=$1 AND s.expires_at>$2 AND c.status='active')`, hash(cookie.Value), a.now()).Scan(&valid); e != nil {
+		if e = a.DB.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM sessions s JOIN customers c ON c.id=s.customer_id WHERE s.token_hash=$1 AND s.expires_at>$2 AND c.status='active' AND c.deleted_at IS NULL)`, hash(cookie.Value), a.now()).Scan(&valid); e != nil {
 			return e
 		}
 		if !valid {

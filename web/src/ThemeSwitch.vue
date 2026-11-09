@@ -1,0 +1,2 @@
+<script setup lang="ts">import {themes} from './appearance';defineProps<{modelValue:string}>();defineEmits<{'update:modelValue':[value:string]}>();</script>
+<template><label class="theme-switch"><span>◐</span><select aria-label="外观主题" :value="modelValue" @change="$emit('update:modelValue',($event.target as HTMLSelectElement).value)"><option value="">跟随站点</option><option v-for="t in themes" :key="t.value" :value="t.value">{{t.label}}</option></select></label></template>

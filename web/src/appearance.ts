@@ -1,0 +1,4 @@
+export const themes=[{value:'mint',label:'清新薄荷'},{value:'ocean',label:'晴空蓝'},{value:'rose',label:'柔雾玫瑰'},{value:'midnight',label:'深夜模式'}];
+export function themeValue(value:unknown){return themes.some(t=>t.value===value)?String(value):'mint'}
+export function backgroundValue(value:unknown):string{let text=String(value||'').trim();if(!text)return '';const css=text.match(/^url\(\s*['"]?([^'"()]+)['"]?\s*\)\s*(?:!important)?\s*;?$/i);if(css)text=css[1]!.trim();text=text.replace(/\\:/g,':');if(/^\/portal\/v1\/media\/[a-f0-9]{32}$/.test(text))return text;if(/[\r\n\x00"'<>\\]/.test(text))return '';try{const u=new URL(text);return u.protocol==='https:'&&!u.username&&!u.password&&!u.hash?u.href:''}catch{return ''}}
+export function savedTheme(){try{const value=localStorage.getItem('starhub.portal.theme')||'';return themes.some(t=>t.value===value)?value:''}catch{return ''}}

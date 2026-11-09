@@ -9,6 +9,10 @@ import (
 )
 
 type Settings struct {
+	Theme             string   `json:"theme"`
+	BackgroundDesktop string   `json:"background_desktop"`
+	BackgroundMobile  string   `json:"background_mobile"`
+	BackgroundDim     int      `json:"background_dim"`
 	Title             string   `json:"title"`
 	RegistrationMode  string   `json:"registration_mode"`
 	Approval          bool     `json:"approval_required"`
@@ -123,11 +127,11 @@ func (a *App) public(w http.ResponseWriter, r *http.Request) error {
 		return e
 	}
 	var announcements json.RawMessage
-	announcements, e = jsonRows(r.Context(), a.DB, `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,title,body,pinned,pin_order,created_at FROM announcements WHERE enabled ORDER BY pinned DESC,pin_order,created_at DESC,id LIMIT 100)x`)
+	announcements, e = jsonRows(r.Context(), a.DB, `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,title,body,images,pinned,pin_order,created_at FROM announcements WHERE enabled ORDER BY pinned DESC,pin_order,created_at DESC,id LIMIT 100)x`)
 	if e != nil {
 		return e
 	}
-	send(w, 200, map[string]any{"title": s.Title, "registration_mode": s.RegistrationMode, "approval_required": s.Approval, "show_catalog": s.ShowCatalog, "traffic_unit": s.TrafficUnit, "email_ready": secrets.SMTPHost != "" || a.Mail != nil, "alipay_ready": secrets.Alipay != nil && secrets.Alipay.Enabled, "announcements": announcements, "version": Version})
+	send(w, 200, map[string]any{"title": s.Title, "theme": s.Theme, "background_desktop": s.BackgroundDesktop, "background_mobile": s.BackgroundMobile, "background_dim": s.BackgroundDim, "registration_mode": s.RegistrationMode, "approval_required": s.Approval, "show_catalog": s.ShowCatalog, "traffic_unit": s.TrafficUnit, "email_ready": secrets.SMTPHost != "" || a.Mail != nil, "alipay_ready": secrets.Alipay != nil && secrets.Alipay.Enabled, "announcements": announcements, "version": Version})
 	return nil
 }
 func raw(v any) []byte { b, _ := json.Marshal(v); return b }

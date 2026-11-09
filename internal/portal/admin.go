@@ -291,12 +291,13 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 		_, e = tx.Exec(r.Context(), "UPDATE jobs SET state='queued',available_at=now(),detail='' WHERE id=$1 AND state='failed' AND kind IN ('fulfill','mail','access','migrate','policy')", id)
 	case "announcements":
 		var b struct {
-			ID       string `json:"id"`
-			Title    string `json:"title"`
-			Pinned   bool   `json:"pinned"`
-			PinOrder int    `json:"pin_order"`
-			Body     string `json:"body"`
-			Enabled  bool   `json:"enabled"`
+			ID       string   `json:"id"`
+			Title    string   `json:"title"`
+			Pinned   bool     `json:"pinned"`
+			PinOrder int      `json:"pin_order"`
+			Body     string   `json:"body"`
+			Images   []string `json:"images"`
+			Enabled  bool     `json:"enabled"`
 		}
 		if e = decode(w, r, &b); e != nil {
 			return e
@@ -307,9 +308,15 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 		id = b.ID
 		if id == "" {
 			id = ID()
-			_, e = tx.Exec(r.Context(), "INSERT INTO announcements(id,title,body,enabled,pinned,pin_order) VALUES($1,$2,$3,$4,$5,$6)", id, b.Title, b.Body, b.Enabled, b.Pinned, b.PinOrder)
+			if e = validateMediaRefs(r.Context(), tx, current(r), "announcement", b.Images, ""); e != nil {
+				return e
+			}
+			_, e = tx.Exec(r.Context(), "INSERT INTO announcements(id,title,body,enabled,pinned,pin_order,images) VALUES($1,$2,$3,$4,$5,$6,$7)", id, b.Title, b.Body, b.Enabled, b.Pinned, b.PinOrder, mediaList(b.Images))
 		} else {
-			_, e = tx.Exec(r.Context(), "UPDATE announcements SET title=$2,body=$3,enabled=$4,pinned=$5,pin_order=$6 WHERE id=$1", id, b.Title, b.Body, b.Enabled, b.Pinned, b.PinOrder)
+			if e = validateMediaRefs(r.Context(), tx, current(r), "announcement", b.Images, id); e != nil {
+				return e
+			}
+			_, e = tx.Exec(r.Context(), "UPDATE announcements SET title=$2,body=$3,enabled=$4,pinned=$5,pin_order=$6,images=$7 WHERE id=$1", id, b.Title, b.Body, b.Enabled, b.Pinned, b.PinOrder, mediaList(b.Images))
 		}
 	default:
 		return Problem{405, "该资源仅支持查询"}
@@ -352,6 +359,15 @@ func (a *App) adminSettings(w http.ResponseWriter, r *http.Request) error {
 		return e
 	}
 	n := b.Settings
+	if n.Theme != "" && !includes([]string{"mint", "ocean", "rose", "midnight"}, n.Theme) || n.BackgroundDim < 0 || n.BackgroundDim > 85 {
+		return bad("主题或背景遮罩设置无效")
+	}
+	if n.BackgroundDesktop, e = backgroundURL(n.BackgroundDesktop); e != nil {
+		return e
+	}
+	if n.BackgroundMobile, e = backgroundURL(n.BackgroundMobile); e != nil {
+		return e
+	}
 	if strings.TrimSpace(n.Title) == "" || !cleanText(n.Title, 40) || !includes([]string{"closed", "invite", "allowlist", "email"}, n.RegistrationMode) || !includes([]string{"GB", "GiB", "auto"}, n.TrafficUnit) || n.RegistrationLimit < 1 || n.RegistrationLimit > 500 || len(n.Allowlist) > 100 {
 		return bad("站点设置无效")
 	}
@@ -463,6 +479,13 @@ func (a *App) adminSettings(w http.ResponseWriter, r *http.Request) error {
 	defer tx.Rollback(r.Context())
 	if e = lock(r.Context(), tx); e != nil {
 		return e
+	}
+	for _, path := range []string{n.BackgroundDesktop, n.BackgroundMobile} {
+		if strings.HasPrefix(path, "/portal/v1/media/") {
+			if e = validateMediaRefs(r.Context(), tx, current(r), "background", []string{mediaID(path)}, ""); e != nil {
+				return e
+			}
+		}
 	}
 	tag, e := tx.Exec(r.Context(), "UPDATE settings SET public=$2,secrets=$3,version=version+1 WHERE id=true AND version=$1", n.Version, raw(n), sealed)
 	if e != nil {

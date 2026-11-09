@@ -44,6 +44,17 @@ func (a *App) pruneHistory(ctx context.Context, manual bool, kind string) error 
 			return e
 		}
 	}
+	if kind == "" && !manual {
+		var acquired bool
+		if e = tx.QueryRow(ctx, "SELECT pg_try_advisory_xact_lock(90234002)").Scan(&acquired); e != nil {
+			return e
+		}
+		if acquired {
+			if _, e = tx.Exec(ctx, `DELETE FROM media_assets m WHERE m.created_at<now()-interval '24 hours' AND NOT `+mediaReferenced); e != nil {
+				return e
+			}
+		}
+	}
 	if e = tx.Commit(ctx); e == nil {
 		a.nextRetention = a.now().Add(5 * time.Minute)
 	}
