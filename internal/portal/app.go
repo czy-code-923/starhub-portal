@@ -28,7 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const Version = "0.12.0"
+const Version = "0.12.1"
 const Repository = "czy-code-923/starhub-portal"
 
 //go:embed migrations/*.sql
