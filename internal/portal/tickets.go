@@ -94,7 +94,7 @@ func (a *App) ticket(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 	if b.Close {
-		if _, e = tx.Exec(r.Context(), "UPDATE tickets SET state='closed' WHERE id=$1", r.PathValue("id")); e != nil {
+		if _, e = tx.Exec(r.Context(), "UPDATE tickets SET state='closed',closed_at=now() WHERE id=$1", r.PathValue("id")); e != nil {
 			return e
 		}
 	}

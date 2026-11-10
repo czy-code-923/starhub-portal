@@ -1,5 +1,11 @@
 # API 与业务状态
 
+0.13.0：新增仅主管理员的 `GET /admin/history-cleanup?kind=tickets|orders|manual-payments|announcements&action=archive|restore|purge|attachments&days=90&id=<可选>`，返回 `eligible`、`ids`、`has_more`、`batch_limit=100`。类型与操作按白名单匹配；全量按时间筛选要求 7–3650 天，逐条指定 id 可使用 0 天。预览不删除内容。
+
+`POST /admin/history-cleanup` 需要 CSRF 和 `{kind,action,days,id,ids,confirmed:true}`。批量必须提交预览得到的 1–100 个 ID；逐条可直接指定 id。事务内共享业务锁并重新判断是否满足条件；新记录不进入已确认批次，状态变化记录跳过，无匹配返回 409。返回处理数、移除图片数及核款附件字节数，留下审计。有效服务、待处理付款、开通及续费/交易防重账本不会永久删除；仅无任何付款关联的已取消过期订单允许 purge。核款只能 archive/restore/attachments，附件清理须已归档且订单及核款均结束。
+
+`GET /admin/orders?archived=1`、`GET /admin/manual-payments?archived=1` 查看归档列表，默认列表排除归档。客户自己的订单与订阅接口不受管理员归档影响。核款返回 `archived_at`、`attachments_purged_at`。工单永久清理会使详情返回 404，图片只在已无任何引用时删除；原有工单关闭/回复鉴权不变。
+
 0.12.0：`GET /admin/coupons` 增加 `used_uses`、`reserved_uses`、`paid_uses`、`released_uses`、`remaining_uses`（不限时 null）；占用状态与结算一致为 pending/paid/refund_pending/refunded。`GET /admin/invitations` 增加 `remaining_uses`、`verified_uses`、`reserved_uses`；剩余仍以原权威 claimed 计数为准。
 
 `GET /admin/{coupons|invitations}/{id}/usage?offset=0` 分别需要 coupons 或 invitations 权限，返回 `items`、`summary`、`total`、`offset`、`limit=25`；按创建时间和 ID 倒序，offset 为 0–1,000,000 的整数。优惠记录只暴露账户、订单金额/状态和时间，不返回快照、支付口令或认证数据；邀请记录包含验证、释放及预占截止时间。不存在返回 404，无权限 403。直接读取现有账本，删除客户不擦除核销记录。

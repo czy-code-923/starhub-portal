@@ -111,7 +111,7 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 			"coupons":       couponListSQL,
 			"invitations":   `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,prefix,email,enabled,starts_at,ends_at,max_uses,claimed,created_at FROM invitations ORDER BY created_at DESC LIMIT 200)x`,
 			"customers":     `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,email,name,role,status,created_at,email_verified_at FROM customers WHERE role='customer' ORDER BY created_at DESC LIMIT 500)x`,
-			"orders":        `SELECT COALESCE(jsonb_agg(to_jsonb(x)-'fulfillment_payload'),'[]') FROM(SELECT o.*,(SELECT s.remote_state FROM service_accounts s WHERE s.order_id=COALESCE(o.renewal_of,o.id)) service_state,(SELECT s.remote_checked_at FROM service_accounts s WHERE s.order_id=COALESCE(o.renewal_of,o.id)) service_checked_at,(SELECT m.state FROM manual_payments m WHERE m.order_id=o.id) manual_state,c.email FROM orders o JOIN customers c ON c.id=o.customer_id ORDER BY o.created_at DESC LIMIT 300)x`,
+			"orders":        `SELECT COALESCE(jsonb_agg(to_jsonb(x)-'fulfillment_payload'),'[]') FROM(SELECT o.*,(SELECT s.remote_state FROM service_accounts s WHERE s.order_id=COALESCE(o.renewal_of,o.id)) service_state,(SELECT s.remote_checked_at FROM service_accounts s WHERE s.order_id=COALESCE(o.renewal_of,o.id)) service_checked_at,(SELECT m.state FROM manual_payments m WHERE m.order_id=o.id) manual_state,c.email FROM orders o JOIN customers c ON c.id=o.customer_id WHERE (o.archived_at IS NOT NULL)=$1 ORDER BY o.created_at DESC LIMIT 300)x`,
 			"jobs":          `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,kind,subject,state,attempts,available_at,detail,updated_at FROM jobs ORDER BY created_at DESC LIMIT 200)x`,
 			"announcements": `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT * FROM announcements ORDER BY pinned DESC,pin_order,created_at DESC,id LIMIT 100)x`,
 			"tickets":       `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT t.*,c.email FROM tickets t JOIN customers c ON c.id=t.customer_id ORDER BY t.created_at DESC LIMIT 200)x`,
@@ -120,7 +120,11 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 		if !ok {
 			return bad("未知资源")
 		}
-		data, e := jsonRows(r.Context(), a.DB, q)
+		args := []any{}
+		if kind == "orders" {
+			args = append(args, r.URL.Query().Get("archived") == "1")
+		}
+		data, e := jsonRows(r.Context(), a.DB, q, args...)
 		if e != nil {
 			return e
 		}
@@ -316,7 +320,7 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 			if e = validateMediaRefs(r.Context(), tx, current(r), "announcement", b.Images, id); e != nil {
 				return e
 			}
-			_, e = tx.Exec(r.Context(), "UPDATE announcements SET title=$2,body=$3,enabled=$4,pinned=$5,pin_order=$6,images=$7 WHERE id=$1", id, b.Title, b.Body, b.Enabled, b.Pinned, b.PinOrder, mediaList(b.Images))
+			_, e = tx.Exec(r.Context(), "UPDATE announcements SET title=$2,body=$3,enabled=$4,pinned=$5,pin_order=$6,images=$7,updated_at=now() WHERE id=$1", id, b.Title, b.Body, b.Enabled, b.Pinned, b.PinOrder, mediaList(b.Images))
 		}
 	default:
 		return Problem{405, "该资源仅支持查询"}

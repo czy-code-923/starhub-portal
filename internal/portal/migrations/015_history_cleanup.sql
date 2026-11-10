@@ -1,0 +1,10 @@
+ALTER TABLE orders ADD COLUMN archived_at timestamptz;
+ALTER TABLE manual_payments ADD COLUMN archived_at timestamptz;
+ALTER TABLE manual_payments ADD COLUMN attachments_purged_at timestamptz;
+ALTER TABLE tickets ADD COLUMN closed_at timestamptz;
+CREATE INDEX ticket_messages_activity ON ticket_messages(ticket_id,created_at DESC);
+UPDATE tickets t SET closed_at=GREATEST(t.created_at,COALESCE((SELECT max(m.created_at) FROM ticket_messages m WHERE m.ticket_id=t.id),t.created_at)) WHERE t.state='closed';
+ALTER TABLE announcements ADD COLUMN updated_at timestamptz NOT NULL DEFAULT now();
+UPDATE announcements SET updated_at=created_at;
+CREATE INDEX tickets_closed_cleanup ON tickets(closed_at,id) WHERE state='closed';
+CREATE INDEX orders_admin_archive ON orders(archived_at,created_at DESC);

@@ -339,7 +339,7 @@ func (a *App) reviewPayments(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	id := r.PathValue("id")
 	if r.Method == "GET" {
-		data, e := jsonRows(ctx, a.DB, `SELECT COALESCE(jsonb_agg(x ORDER BY x.created_at DESC),'[]') FROM(SELECT m.id,m.order_id,m.method_id,m.provider,m.method_name,(m.redpacket_sealed IS NOT NULL) redpacket_submitted,m.state,m.reference,m.payer_note,(m.proof_image IS NOT NULL) proof_available,m.verified_reference,m.received_amount,m.received_at,m.review_note,m.reviewed_at,m.review_deadline,m.submitted_at,m.created_at,m.version,o.payable,o.state order_state,o.customer_id,c.email,c.name FROM manual_payments m JOIN orders o ON o.id=m.order_id JOIN customers c ON c.id=o.customer_id WHERE ($1='' OR m.id=$1) ORDER BY m.created_at DESC LIMIT 300)x`, id)
+		data, e := jsonRows(ctx, a.DB, `SELECT COALESCE(jsonb_agg(x ORDER BY x.created_at DESC),'[]') FROM(SELECT m.id,m.order_id,m.method_id,m.provider,m.method_name,(m.redpacket_sealed IS NOT NULL) redpacket_submitted,m.state,m.reference,m.payer_note,(m.proof_image IS NOT NULL) proof_available,m.verified_reference,m.received_amount,m.received_at,m.review_note,m.reviewed_at,m.review_deadline,m.submitted_at,m.created_at,m.archived_at,m.attachments_purged_at,m.version,o.payable,o.state order_state,o.customer_id,c.email,c.name FROM manual_payments m JOIN orders o ON o.id=m.order_id JOIN customers c ON c.id=o.customer_id WHERE ($1='' OR m.id=$1) AND ($1<>'' OR (m.archived_at IS NOT NULL)=$2) ORDER BY m.created_at DESC LIMIT 300)x`, id, r.URL.Query().Get("archived") == "1")
 		if e != nil {
 			return e
 		}

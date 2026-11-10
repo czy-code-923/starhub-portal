@@ -28,7 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const Version = "0.12.1"
+const Version = "0.13.0"
 const Repository = "czy-code-923/starhub-portal"
 
 //go:embed migrations/*.sql
@@ -391,6 +391,8 @@ func (a *App) Handler() http.Handler {
 	for _, kind := range []string{"coupons", "invitations"} {
 		m.HandleFunc("GET /portal/v1/admin/"+kind+"/{id}/usage", a.auth(func(w http.ResponseWriter, r *http.Request) error { return a.codeUsage(w, r, kind) }, true))
 	}
+	m.HandleFunc("GET /portal/v1/admin/history-cleanup", a.auth(a.historyCleanup, true))
+	m.HandleFunc("POST /portal/v1/admin/history-cleanup", a.auth(a.historyCleanup, true))
 	m.HandleFunc("GET /portal/v1/openapi", a.auth(a.openapi, true))
 	m.HandleFunc("POST /portal/v1/admin/gateway/retry", a.auth(a.retryGateway, true))
 	m.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
