@@ -78,6 +78,12 @@ func (a *App) renewalOptions(w http.ResponseWriter, r *http.Request) error {
 	if !deadline.IsZero() {
 		deadlineValue = &deadline
 	}
-	send(w, 200, map[string]any{"service_id": t.Selection.Order, "service": u, "plan": map[string]any{"id": p.ID, "name": p.Name, "prices": prices}, "available": available, "reason": reason, "renewal_deadline": deadlineValue, "stock_limit": p.Stock, "remaining_stock": stock, "requires_seat": !held, "pending_orders": pending, "note": "续费沿用原身份和订阅链接，有效期内续费沿用原名额；过期后重新开通需剩余名额；须在到期后 72 小时内下单并付款。只延长期限，不清零本期用量，月度配额按原重置日恢复。"})
+	var recurring any
+	if c, found, err := a.recurringCoupon(r.Context(), current(r).ID, t.Selection.Order); err != nil {
+		return err
+	} else if found {
+		recurring = map[string]any{"code": c.Code, "name": c.Name, "recurrence": c.Recurrence, "recurring_until": c.RecurringUntil, "active": a.recurringActive(c)}
+	}
+	send(w, 200, map[string]any{"recurring_coupon": recurring, "service_id": t.Selection.Order, "service": u, "plan": map[string]any{"id": p.ID, "name": p.Name, "prices": prices}, "available": available, "reason": reason, "renewal_deadline": deadlineValue, "stock_limit": p.Stock, "remaining_stock": stock, "requires_seat": !held, "pending_orders": pending, "note": "续费沿用原身份和订阅链接，有效期内续费沿用原名额；过期后重新开通需剩余名额；须在到期后 72 小时内下单并付款。只延长期限，不清零本期用量，月度配额按原重置日恢复。"})
 	return nil
 }

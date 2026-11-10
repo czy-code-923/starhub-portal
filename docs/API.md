@@ -94,3 +94,16 @@ Telegram approve 现在同时支持口令红包与 alipay_static / wechat_static
 管理员修改套餐 group_ids/protocols 时递增独立 policy_revision，并事务性排队 policy 任务。通过星枢 0.25.2+ `PUT /commerce/accounts/{external_id}/policy` 同步各已购身份，body 绑定 user_id、subscription_id、source_id=plan_id 和递增 revision。接口不修改任何会计字段、凭据或有效期。`GET /admin/plans` 增加 effective_members、policy_pending、policy_failed；后台任务支持重试。`GET /me/service` 增加 policy_synced/policy_warning，订阅 check 在权限同步未完成时返回 ready=false 和明确 policy_pending，share 则 503，不伪装成客户端协议不兼容。客户端更新原订阅后取得新授权节点。
 
 0.10.0：本机受限 Worker Token 的 `POST /local/domain` 请求 `{domain,https,ip_origin,allow_http}` 只更新入口设置并排队网关任务。空 domain 使用显式 IP+端口 origin，HTTP 需 allow_http；不接受任意命令、路径、SQL 或监听地址。禁止与更新/网关任务并发，保留其他配置和密钥。CLI 会拒绝对原回环部署自动开放公网；不改 DNS、防火墙或星枢 Agent 地址。
+
+
+## 0.14.0 循环优惠
+
+`POST/PUT /admin/coupons` 新增 `recurrence: none|until|forever`（省略为普通优惠）及 `recurring_until`（仅 until 必填，其他模式归一化为 null）。`starts_at` / `ends_at` 为首次领取时间窗；循环优惠续费时使用独立的截止时间或永久有效，仍受启用状态、适用套餐/周期/用户、最低金额及封顶限制。`new_only` 和领取次数上限仅检查首次绑定；取消未付订单释放首次占位，退款不返还次数。
+
+绑定从本用户、同一原始订阅的已付订单推导。另一份订阅、未付款/已取消订单不会继承。启用循环优惠后，曾使用此码的既有已付订阅也能沿用；普通码不会自动变为循环。新订阅或首次在某订阅使用循环码计一次；之后同一订阅续费 `coupon_reused=true` 不重复计次。明确输入另一优惠码只覆盖本次；该码若也是循环优惠，付款后替换此订阅的循环绑定。绑定优惠停用、到期或不适用时，留空报价按原价并返回说明，不回退到更早的循环码。
+
+`GET /me/renewal?service=原始订单ID` 增加 `recurring_coupon`（code/name/recurrence/recurring_until/active）。`POST /checkout/quote` 续费时 coupon 留空自动匹配，返回 `coupon_recurring`、`coupon_reused`、`coupon_automatic`、`coupon_recurrence`、`coupon_recurring_until`、`coupon_note`。报价基于当前套餐金额与当前优惠条款，历史实付不锁价；已创建订单保留原快照。
+
+`POST /orders` 支持可选正整数 `expected_payable`，与最新服务端应付金额不符返回 409，请重新核价并使用新 request_key。网页创建新购/续费订单均传此字段。该字段加入幂等请求摘要，旧 API 不传仍兼容；续费目标依旧为 `renewal_of=原始订单ID`。
+
+`GET /admin/coupons` 与 `/admin/coupons/{id}/usage` 的 used_uses/reserved_uses 仅包含首次领取/预占，新增 recurring_uses 统计未取消的循环续费。使用记录逐单标记 coupon_reused 与 counts_toward_limit。paid_uses 统计全部已付用码订单，包含不重复计次的续费。

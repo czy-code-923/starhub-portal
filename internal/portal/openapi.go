@@ -67,8 +67,31 @@ func (a *App) openapi(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
-	send(w, 200, map[string]any{"openapi": "3.0.3", "info": map[string]string{"title": "Starhub Portal API", "version": Version}, "paths": paths, "components": map[string]any{"securitySchemes": map[string]any{"Session": map[string]string{"type": "apiKey", "in": "cookie", "name": "sp_session"}}}, "security": []map[string]any{{"Session": []string{}}}})
+	schemas := recurringCouponDocs(paths)
+	send(w, 200, map[string]any{"openapi": "3.0.3", "info": map[string]string{"title": "Starhub Portal API", "version": Version}, "paths": paths, "components": map[string]any{"schemas": schemas, "securitySchemes": map[string]any{"Session": map[string]string{"type": "apiKey", "in": "cookie", "name": "sp_session"}}}, "security": []map[string]any{{"Session": []string{}}}})
 	return nil
+}
+
+func recurringCouponDocs(paths map[string]any) map[string]any {
+	quote := map[string]any{"type": "object", "required": []string{"plan_id", "price_id"}, "properties": map[string]any{
+		"plan_id": map[string]any{"type": "string"}, "price_id": map[string]any{"type": "string"},
+		"renewal_of":  map[string]any{"type": "string", "description": "Original service order ID; must belong to the caller"},
+		"coupon":      map[string]any{"type": "string", "description": "Blank automatically applies this exact subscription's recurring coupon on renewal; another code overrides this invoice"},
+		"request_key": map[string]any{"type": "string"}, "expected_payable": map[string]any{"type": "integer", "format": "int64", "minimum": 1, "description": "Optional quoted amount in cents; creation returns 409 on changed price or coupon. Included in idempotency hash."},
+	}}
+	schemas := map[string]any{"Checkout": quote, "OrderCreate": map[string]any{"allOf": []any{map[string]any{"$ref": "#/components/schemas/Checkout"}, map[string]any{"type": "object", "required": []string{"request_key"}}}}, "CouponRecurrence": map[string]any{"type": "object", "properties": map[string]any{
+		"recurrence":      map[string]any{"type": "string", "enum": []string{"none", "until", "forever"}, "default": "none"},
+		"recurring_until": map[string]any{"type": "string", "format": "date-time", "nullable": true, "description": "Required for until; null otherwise. Separate from initial starts_at/ends_at redemption window."},
+	}, "description": "Additional coupon fields. Only the first binding consumes max_uses/per_customer; paid same-service renewals reuse the coupon. Current scopes, discount and enabled status apply; existing invoices retain snapshots."}}
+	for path, name := range map[string]string{"/portal/v1/checkout/quote": "Checkout", "/portal/v1/orders": "OrderCreate"} {
+		op := paths[path].(map[string]any)["post"].(map[string]any)
+		op["requestBody"] = map[string]any{"required": true, "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"$ref": "#/components/schemas/" + name}}}}
+	}
+	for _, method := range []string{"post", "put"} {
+		paths["/portal/v1/admin/coupons"].(map[string]any)[method].(map[string]any)["description"] = "CouponRecurrence extends the existing coupon body. starts_at/ends_at gate initial redemption; recurring_until/forever controls subsequent renewals. Usage exposes recurring_uses and coupon_reused separately."
+	}
+	paths["/portal/v1/me/renewal"].(map[string]any)["get"].(map[string]any)["description"] = "Returns recurring_coupon (code, name, recurrence, recurring_until, active) for this exact owned subscription. Quote recalculates eligibility and current prices."
+	return schemas
 }
 
 func adminDocRole(path string) string {

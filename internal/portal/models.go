@@ -85,23 +85,25 @@ type PlanFeature struct {
 	Value string `json:"value"`
 }
 type Coupon struct {
-	ID          string    `json:"id"`
-	Version     int       `json:"version"`
-	Code        string    `json:"code"`
-	Name        string    `json:"name"`
-	Enabled     bool      `json:"enabled"`
-	Kind        string    `json:"kind"`
-	Amount      int64     `json:"amount"`
-	Minimum     int64     `json:"minimum"`
-	Maximum     int64     `json:"maximum_discount"`
-	Starts      time.Time `json:"starts_at"`
-	Ends        time.Time `json:"ends_at"`
-	Plans       []string  `json:"plan_ids"`
-	Prices      []string  `json:"price_ids"`
-	Customers   []string  `json:"customer_ids"`
-	NewOnly     bool      `json:"new_only"`
-	MaxUses     int       `json:"max_uses"`
-	PerCustomer int       `json:"per_customer"`
+	Recurrence     string     `json:"recurrence"`
+	RecurringUntil *time.Time `json:"recurring_until"`
+	ID             string     `json:"id"`
+	Version        int        `json:"version"`
+	Code           string     `json:"code"`
+	Name           string     `json:"name"`
+	Enabled        bool       `json:"enabled"`
+	Kind           string     `json:"kind"`
+	Amount         int64      `json:"amount"`
+	Minimum        int64      `json:"minimum"`
+	Maximum        int64      `json:"maximum_discount"`
+	Starts         time.Time  `json:"starts_at"`
+	Ends           time.Time  `json:"ends_at"`
+	Plans          []string   `json:"plan_ids"`
+	Prices         []string   `json:"price_ids"`
+	Customers      []string   `json:"customer_ids"`
+	NewOnly        bool       `json:"new_only"`
+	MaxUses        int        `json:"max_uses"`
+	PerCustomer    int        `json:"per_customer"`
 }
 
 func (a *App) settings(ctx context.Context) (Settings, Secrets, error) {

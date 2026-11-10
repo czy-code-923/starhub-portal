@@ -247,12 +247,21 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 		if !couponPattern.MatchString(b.Code) || strings.TrimSpace(b.Name) == "" || !cleanText(b.Name, 80) || !includes([]string{"fixed", "percent"}, b.Kind) || b.Amount < 1 || b.Amount > 100000000 || b.Kind == "percent" && b.Amount > 10000 || b.Minimum < 0 || b.Maximum < 0 || b.MaxUses < 0 || b.PerCustomer < 1 || b.PerCustomer > 10000 || !b.Ends.After(b.Starts) || len(b.Plans) > 100 || len(b.Prices) > 100 || len(b.Customers) > 500 {
 			return bad("优惠码参数无效；比例为减免基点，1000 表示减免 10%")
 		}
+		if b.Recurrence == "" {
+			b.Recurrence = "none"
+		}
+		if !includes([]string{"none", "until", "forever"}, b.Recurrence) || b.Recurrence == "until" && (b.RecurringUntil == nil || !b.RecurringUntil.After(b.Starts)) {
+			return bad("循环优惠模式或截止时间无效")
+		}
+		if b.Recurrence != "until" {
+			b.RecurringUntil = nil
+		}
 		id = b.ID
 		if id == "" {
 			id = ID()
-			_, e = tx.Exec(r.Context(), `INSERT INTO coupons(id,code,name,enabled,kind,amount,minimum,maximum_discount,starts_at,ends_at,plan_ids,price_ids,customer_ids,new_only,max_uses,per_customer) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, id, b.Code, b.Name, b.Enabled, b.Kind, b.Amount, b.Minimum, b.Maximum, b.Starts, b.Ends, raw(b.Plans), raw(b.Prices), raw(b.Customers), b.NewOnly, b.MaxUses, b.PerCustomer)
+			_, e = tx.Exec(r.Context(), `INSERT INTO coupons(id,code,name,enabled,kind,amount,minimum,maximum_discount,starts_at,ends_at,plan_ids,price_ids,customer_ids,new_only,max_uses,per_customer,recurrence,recurring_until) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`, id, b.Code, b.Name, b.Enabled, b.Kind, b.Amount, b.Minimum, b.Maximum, b.Starts, b.Ends, raw(b.Plans), raw(b.Prices), raw(b.Customers), b.NewOnly, b.MaxUses, b.PerCustomer, b.Recurrence, b.RecurringUntil)
 		} else {
-			tag, err := tx.Exec(r.Context(), `UPDATE coupons SET code=$3,name=$4,enabled=$5,kind=$6,amount=$7,minimum=$8,maximum_discount=$9,starts_at=$10,ends_at=$11,plan_ids=$12,price_ids=$13,customer_ids=$14,new_only=$15,max_uses=$16,per_customer=$17,version=version+1 WHERE id=$1 AND version=$2`, id, b.Version, b.Code, b.Name, b.Enabled, b.Kind, b.Amount, b.Minimum, b.Maximum, b.Starts, b.Ends, raw(b.Plans), raw(b.Prices), raw(b.Customers), b.NewOnly, b.MaxUses, b.PerCustomer)
+			tag, err := tx.Exec(r.Context(), `UPDATE coupons SET code=$3,name=$4,enabled=$5,kind=$6,amount=$7,minimum=$8,maximum_discount=$9,starts_at=$10,ends_at=$11,plan_ids=$12,price_ids=$13,customer_ids=$14,new_only=$15,max_uses=$16,per_customer=$17,recurrence=$18,recurring_until=$19,version=version+1 WHERE id=$1 AND version=$2`, id, b.Version, b.Code, b.Name, b.Enabled, b.Kind, b.Amount, b.Minimum, b.Maximum, b.Starts, b.Ends, raw(b.Plans), raw(b.Prices), raw(b.Customers), b.NewOnly, b.MaxUses, b.PerCustomer, b.Recurrence, b.RecurringUntil)
 			e = err
 			if e == nil && tag.RowsAffected() != 1 {
 				return Problem{409, "优惠码已变化，请刷新"}

@@ -11,25 +11,32 @@ import (
 )
 
 type Buy struct {
-	RenewalOf string `json:"renewal_of,omitempty"`
-	PlanID    string `json:"plan_id"`
-	PriceID   string `json:"price_id"`
-	Coupon    string `json:"coupon"`
-	Key       string `json:"request_key"`
+	ExpectedPayable *int64 `json:"expected_payable,omitempty"`
+	RenewalOf       string `json:"renewal_of,omitempty"`
+	PlanID          string `json:"plan_id"`
+	PriceID         string `json:"price_id"`
+	Coupon          string `json:"coupon"`
+	Key             string `json:"request_key"`
 }
 type Quote struct {
-	Plan            Plan       `json:"-"`
-	Price           Price      `json:"-"`
-	CouponID        string     `json:"-"`
-	Base            int64      `json:"base_amount"`
-	Discount        int64      `json:"discount_amount"`
-	Payable         int64      `json:"payable"`
-	Expires         time.Time  `json:"expires_at"`
-	CouponCode      string     `json:"coupon_code"`
-	PlanName        string     `json:"plan_name"`
-	Months          int        `json:"months"`
-	Quota           int64      `json:"quota_bytes"`
-	RenewalDeadline *time.Time `json:"renewal_deadline,omitempty"`
+	CouponRecurring      bool       `json:"coupon_recurring,omitempty"`
+	CouponReused         bool       `json:"coupon_reused,omitempty"`
+	CouponAutomatic      bool       `json:"coupon_automatic,omitempty"`
+	CouponRecurrence     string     `json:"coupon_recurrence,omitempty"`
+	CouponRecurringUntil *time.Time `json:"coupon_recurring_until,omitempty"`
+	CouponNote           string     `json:"coupon_note,omitempty"`
+	Plan                 Plan       `json:"-"`
+	Price                Price      `json:"-"`
+	CouponID             string     `json:"-"`
+	Base                 int64      `json:"base_amount"`
+	Discount             int64      `json:"discount_amount"`
+	Payable              int64      `json:"payable"`
+	Expires              time.Time  `json:"expires_at"`
+	CouponCode           string     `json:"coupon_code"`
+	PlanName             string     `json:"plan_name"`
+	Months               int        `json:"months"`
+	Quota                int64      `json:"quota_bytes"`
+	RenewalDeadline      *time.Time `json:"renewal_deadline,omitempty"`
 }
 
 func (a *App) catalog(w http.ResponseWriter, r *http.Request) error {
@@ -179,43 +186,8 @@ func (a *App) calculate(r *http.Request, tx pgx.Tx, b Buy) (Quote, error) {
 	q.PlanName = p.Name
 	q.Months = q.Price.Months
 	q.Quota = p.Quota
-	code := strings.ToUpper(strings.TrimSpace(b.Coupon))
-	if code != "" {
-		if !couponPattern.MatchString(code) {
-			return q, bad("优惠码格式不正确")
-		}
-		var c Coupon
-		e = tx.QueryRow(r.Context(), "SELECT to_jsonb(c) FROM coupons c WHERE code=$1 AND enabled AND starts_at<=$2 AND ends_at>$2", code, a.now()).Scan(&data)
-		if e != nil {
-			return q, bad("优惠码无效或不在有效时间内")
-		}
-		if e = json.Unmarshal(data, &c); e != nil {
-			return q, e
-		}
-		if !eligibleScope(c.Plans, p.ID) || !eligibleScope(c.Prices, q.Price.ID) || !eligibleScope(c.Customers, current(r).ID) || c.NewOnly && paid > 0 || q.Base < c.Minimum {
-			return q, bad("优惠码不适用于该用户、套餐、周期或订单金额")
-		}
-		var total, own int
-		if e = tx.QueryRow(r.Context(), "SELECT count(*),count(*) FILTER(WHERE customer_id=$2) FROM orders WHERE coupon_id=$1 AND state IN "+couponCountStates, c.ID, current(r).ID).Scan(&total, &own); e != nil {
-			return q, e
-		}
-		if c.MaxUses > 0 && total >= c.MaxUses || own >= c.PerCustomer {
-			return q, Problem{409, "优惠码使用名额已满或达到个人次数上限"}
-		}
-		q.Discount = c.Amount
-		if c.Kind == "percent" {
-			q.Discount = q.Base * c.Amount / 10000
-		}
-		if c.Maximum > 0 {
-			q.Discount = min(q.Discount, c.Maximum)
-		}
-		q.Discount = min(q.Discount, q.Base-1)
-		q.Payable = q.Base - q.Discount
-		q.CouponID = c.ID
-		q.CouponCode = c.Code
-		if c.Ends.Before(q.Expires) {
-			q.Expires = c.Ends
-		}
+	if e = a.applyCoupon(r, tx, b, &q, paid); e != nil {
+		return q, e
 	}
 	if q.Expires.Sub(a.now()) < time.Minute {
 		return q, bad("活动即将结束，已不足一个有效支付窗口")
@@ -284,6 +256,12 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) error {
 		}
 		requestFields = append(requestFields, b.RenewalOf)
 	}
+	if b.ExpectedPayable != nil {
+		if *b.ExpectedPayable < 1 {
+			return bad("核价金额无效")
+		}
+		requestFields = append(requestFields, string(raw(*b.ExpectedPayable)))
+	}
 	requestHash := hash(string(raw(requestFields)))
 	var oldID, oldHash string
 	e = tx.QueryRow(r.Context(), "SELECT id,request_hash FROM orders WHERE customer_id=$1 AND request_key=$2", current(r).ID, b.Key).Scan(&oldID, &oldHash)
@@ -307,6 +285,9 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) error {
 	q, e := a.calculate(r, tx, b)
 	if e != nil {
 		return e
+	}
+	if b.ExpectedPayable != nil && q.Payable != *b.ExpectedPayable {
+		return Problem{409, "价格或优惠已变化，请重新核算金额"}
 	}
 	if b.RenewalOf == "" {
 		capacity, err := a.capacity(r.Context())
@@ -334,8 +315,8 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 	id := ID()
-	snapshot := map[string]any{"plan": q.Plan, "price": q.Price, "coupon_code": q.CouponCode, "discount_amount": q.Discount}
-	_, e = tx.Exec(r.Context(), `INSERT INTO orders(id,customer_id,plan_id,price_id,snapshot,base_amount,discount_amount,payable,coupon_id,expires_at,request_key,request_hash,renewal_of,renewal_deadline_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11,$12,NULLIF($13,''),$14)`, id, current(r).ID, b.PlanID, b.PriceID, raw(snapshot), q.Base, q.Discount, q.Payable, q.CouponID, q.Expires, b.Key, requestHash, b.RenewalOf, q.RenewalDeadline)
+	snapshot := map[string]any{"plan": q.Plan, "price": q.Price, "coupon_code": q.CouponCode, "discount_amount": q.Discount, "coupon_recurring": q.CouponRecurring, "coupon_reused": q.CouponReused, "coupon_recurrence": q.CouponRecurrence, "coupon_recurring_until": q.CouponRecurringUntil}
+	_, e = tx.Exec(r.Context(), `INSERT INTO orders(id,customer_id,plan_id,price_id,snapshot,base_amount,discount_amount,payable,coupon_id,expires_at,request_key,request_hash,renewal_of,renewal_deadline_at,coupon_reused) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11,$12,NULLIF($13,''),$14,$15)`, id, current(r).ID, b.PlanID, b.PriceID, raw(snapshot), q.Base, q.Discount, q.Payable, q.CouponID, q.Expires, b.Key, requestHash, b.RenewalOf, q.RenewalDeadline, q.CouponReused)
 	if e != nil {
 		return e
 	}
