@@ -14,12 +14,13 @@ var defaultClientHelp []byte
 var helpPlatforms = []string{"Android", "iOS", "Windows", "macOS", "Linux"}
 
 type helpApp struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name"`
-	Platforms []string `json:"platforms"`
-	Format    string   `json:"format"`
-	URL       string   `json:"url"`
-	Steps     []string `json:"steps"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Platforms   []string `json:"platforms"`
+	Format      string   `json:"format"`
+	URL         string   `json:"url"`
+	DownloadURL string   `json:"download_url"`
+	Steps       []string `json:"steps"`
 }
 type helpFAQ struct {
 	Question string `json:"question"`
@@ -49,10 +50,13 @@ func validateHelp(d helpDocument) error {
 			}
 			seen[p] = true
 		}
-		if a.URL != "" {
-			u, e := url.Parse(a.URL)
-			if e != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || len(a.URL) > 1000 {
-				return bad("教程链接需为不含登录凭据的 HTTPS 地址")
+		for _, link := range []string{a.URL, a.DownloadURL} {
+			if link == "" {
+				continue
+			}
+			u, e := url.Parse(link)
+			if e != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || len(link) > 1000 || strings.ContainsAny(link, "\r\n\x00") {
+				return bad("教程与下载链接需为不含登录凭据的 HTTPS 地址")
 			}
 		}
 		for _, s := range a.Steps {
@@ -81,6 +85,11 @@ func (a *App) clientHelp(w http.ResponseWriter, r *http.Request) error {
 			version = 0
 		} else if e != nil {
 			return e
+		}
+		if r.URL.Query().Get("defaults") == "1" {
+			data = defaultClientHelp
+		} else {
+			data = helpDownloadLinks(data)
 		}
 		send(w, 200, map[string]any{"document": data, "version": version, "platforms": helpPlatforms})
 		return nil
@@ -132,4 +141,34 @@ func (a *App) clientHelp(w http.ResponseWriter, r *http.Request) error {
 	}
 	send(w, 200, map[string]any{"version": n, "message": "客户端教程已保存"})
 	return nil
+}
+
+// Old edited tutorials acquire missing official download links only for exact
+// known names. An explicitly empty field is preserved, as are all edited steps.
+func helpDownloadLinks(data json.RawMessage) json.RawMessage {
+	var doc map[string]json.RawMessage
+	if json.Unmarshal(data, &doc) != nil {
+		return data
+	}
+	var apps []map[string]any
+	if json.Unmarshal(doc["apps"], &apps) != nil {
+		return data
+	}
+	var defaults helpDocument
+	if json.Unmarshal(defaultClientHelp, &defaults) != nil {
+		return data
+	}
+	links := map[string]string{}
+	for _, a := range defaults.Apps {
+		links[a.Name] = a.DownloadURL
+	}
+	for _, a := range apps {
+		if _, exists := a["download_url"]; !exists {
+			if name, ok := a["name"].(string); ok {
+				a["download_url"] = links[name]
+			}
+		}
+	}
+	doc["apps"] = raw(apps)
+	return raw(doc)
 }

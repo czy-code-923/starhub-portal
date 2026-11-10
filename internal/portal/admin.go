@@ -108,7 +108,7 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, kind string) error {
 		queries := map[string]string{
 			"categories":    `SELECT COALESCE(jsonb_agg(c ORDER BY c.sort,c.name),'[]') FROM categories c`,
 			"plans":         `SELECT COALESCE(jsonb_agg(p ORDER BY p.sort,p.name),'[]') FROM plans p`,
-			"coupons":       `SELECT COALESCE(jsonb_agg(c),'[]') FROM coupons c`,
+			"coupons":       couponListSQL,
 			"invitations":   `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,prefix,email,enabled,starts_at,ends_at,max_uses,claimed,created_at FROM invitations ORDER BY created_at DESC LIMIT 200)x`,
 			"customers":     `SELECT COALESCE(jsonb_agg(x),'[]') FROM(SELECT id,email,name,role,status,created_at,email_verified_at FROM customers WHERE role='customer' ORDER BY created_at DESC LIMIT 500)x`,
 			"orders":        `SELECT COALESCE(jsonb_agg(to_jsonb(x)-'fulfillment_payload'),'[]') FROM(SELECT o.*,(SELECT s.remote_state FROM service_accounts s WHERE s.order_id=COALESCE(o.renewal_of,o.id)) service_state,(SELECT s.remote_checked_at FROM service_accounts s WHERE s.order_id=COALESCE(o.renewal_of,o.id)) service_checked_at,(SELECT m.state FROM manual_payments m WHERE m.order_id=o.id) manual_state,c.email FROM orders o JOIN customers c ON c.id=o.customer_id ORDER BY o.created_at DESC LIMIT 300)x`,

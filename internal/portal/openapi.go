@@ -18,7 +18,7 @@ func (a *App) openapi(w http.ResponseWriter, r *http.Request) error {
 		}
 		entry[item.method] = map[string]any{"summary": item.summary, "x-role": item.role, "responses": map[string]any{"200": map[string]string{"description": "Success"}, "400": map[string]string{"description": "Invalid typed request"}, "401": map[string]string{"description": "Authentication required"}, "403": map[string]string{"description": "Role, CSRF or ownership denied"}, "409": map[string]string{"description": "Version, coupon or order conflict"}}}
 	}
-	for path, methods := range map[string][]string{"overview": {"get"}, "settings": {"get", "put"}, "categories": {"get", "post", "put"}, "plans": {"get", "post", "put", "delete"}, "plans/restore": {"post"}, "coupons": {"get", "post", "put"}, "invitations": {"get", "post", "put"}, "customers": {"get", "put", "delete"}, "customers/restore": {"post"}, "client-help": {"put"}, "orders": {"get"}, "jobs": {"get", "post"}, "announcements": {"get", "post", "put"}, "tickets": {"get"}, "audit": {"get"}, "control-groups": {"get"}, "capacity": {"get"}, "service-migrations": {"get"}, "record-retention": {"get", "post"}, "version": {"get", "post"}, "payment-methods": {"get", "put"}, "payment-methods/{id}/image": {"get"}, "administrators": {"get", "post", "put", "delete"}, "administrators/restore": {"post"}, "demo-plans": {"post"}, "manual-payments": {"get"}, "manual-payments/{id}": {"get", "put"}, "manual-payments/{id}/redpacket": {"get"}, "telegram": {"get", "put"}, "telegram/check": {"post"}, "telegram/commands": {"post"}, "telegram/retry": {"post"}, "gateway/retry": {"post"}} {
+	for path, methods := range map[string][]string{"coupons/{id}/usage": {"get"}, "invitations/{id}/usage": {"get"}, "overview": {"get"}, "settings": {"get", "put"}, "categories": {"get", "post", "put"}, "plans": {"get", "post", "put", "delete"}, "plans/restore": {"post"}, "coupons": {"get", "post", "put"}, "invitations": {"get", "post", "put"}, "customers": {"get", "put", "delete"}, "customers/restore": {"post"}, "client-help": {"put"}, "orders": {"get"}, "jobs": {"get", "post"}, "announcements": {"get", "post", "put"}, "tickets": {"get"}, "audit": {"get"}, "control-groups": {"get"}, "capacity": {"get"}, "service-migrations": {"get"}, "record-retention": {"get", "post"}, "version": {"get", "post"}, "payment-methods": {"get", "put"}, "payment-methods/{id}/image": {"get"}, "administrators": {"get", "post", "put", "delete"}, "administrators/restore": {"post"}, "demo-plans": {"post"}, "manual-payments": {"get"}, "manual-payments/{id}": {"get", "put"}, "manual-payments/{id}/redpacket": {"get"}, "telegram": {"get", "put"}, "telegram/check": {"post"}, "telegram/commands": {"post"}, "telegram/retry": {"post"}, "gateway/retry": {"post"}} {
 		entry := map[string]any{}
 		for _, method := range methods {
 			role := adminDocRole(path)
@@ -52,6 +52,9 @@ func (a *App) openapi(w http.ResponseWriter, r *http.Request) error {
 			if strings.Contains(path, "/subscription/") {
 				parameters = append(parameters, map[string]any{"name": "client", "in": "query", "schema": map[string]string{"type": "string"}})
 			}
+			if strings.HasSuffix(path, "/usage") {
+				parameters = append(parameters, map[string]any{"name": "offset", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 0, "maximum": 1000000}, "description": "25 records per page, newest first"})
+			}
 			if strings.Contains(path, "{id}") {
 				parameters = append(parameters, map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]string{"type": "string"}})
 			}
@@ -72,6 +75,10 @@ func adminDocRole(path string) string {
 	switch path {
 	case "overview", "telegram", "administrators/restore", "telegram/check", "telegram/commands", "telegram/retry", "gateway/retry", "settings", "version", "capacity", "service-migrations", "payment-methods", "payment-methods/{id}/image", "administrators", "demo-plans":
 		return "owner"
+	case "coupons/{id}/usage":
+		return "admin:coupons"
+	case "invitations/{id}/usage":
+		return "admin:invitations"
 	case "plans/restore":
 		return "admin:plans"
 	case "client-help":

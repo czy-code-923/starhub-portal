@@ -196,7 +196,7 @@ func (a *App) calculate(r *http.Request, tx pgx.Tx, b Buy) (Quote, error) {
 			return q, bad("优惠码不适用于该用户、套餐、周期或订单金额")
 		}
 		var total, own int
-		if e = tx.QueryRow(r.Context(), "SELECT count(*),count(*) FILTER(WHERE customer_id=$2) FROM orders WHERE coupon_id=$1 AND state IN ('pending','paid','refund_pending','refunded')", c.ID, current(r).ID).Scan(&total, &own); e != nil {
+		if e = tx.QueryRow(r.Context(), "SELECT count(*),count(*) FILTER(WHERE customer_id=$2) FROM orders WHERE coupon_id=$1 AND state IN "+couponCountStates, c.ID, current(r).ID).Scan(&total, &own); e != nil {
 			return q, e
 		}
 		if c.MaxUses > 0 && total >= c.MaxUses || own >= c.PerCustomer {

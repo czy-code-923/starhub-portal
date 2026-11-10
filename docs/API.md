@@ -1,5 +1,11 @@
 # API 与业务状态
 
+0.12.0：`GET /admin/coupons` 增加 `used_uses`、`reserved_uses`、`paid_uses`、`released_uses`、`remaining_uses`（不限时 null）；占用状态与结算一致为 pending/paid/refund_pending/refunded。`GET /admin/invitations` 增加 `remaining_uses`、`verified_uses`、`reserved_uses`；剩余仍以原权威 claimed 计数为准。
+
+`GET /admin/{coupons|invitations}/{id}/usage?offset=0` 分别需要 coupons 或 invitations 权限，返回 `items`、`summary`、`total`、`offset`、`limit=25`；按创建时间和 ID 倒序，offset 为 0–1,000,000 的整数。优惠记录只暴露账户、订单金额/状态和时间，不返回快照、支付口令或认证数据；邀请记录包含验证、释放及预占截止时间。不存在返回 404，无权限 403。直接读取现有账本，删除客户不擦除核销记录。
+
+教程 `apps[].download_url` 为可选 HTTPS 下载/安装页链接，与原 `url` 教程链接分离；拒绝凭据及脚本 URL。旧存储缺少字段时，只为名称完全匹配的已知客户端补官方地址，明确保存为空则保留空。`GET /client-help?defaults=1` 返回当前版本的内置推荐内容及当前编辑 version；仅载入草稿，真正替换仍须 content 权限、CSRF 与乐观版本的 `PUT /admin/client-help`。
+
 0.11.1：`GET /admin/overview` 仅主管理员可读，返回 `current_users`（未删除的客户账号，含停用/待验证，排除管理员）、`current_buying_users`（仍有未过期、未停用的已付独立服务，按活跃客户去重，当月额度耗尽仍计入）、`historical_buying_users`（未删除且有已付订单的客户）、`unchecked_buying_users`（有未知状态已付服务的活跃客户）、`pending_orders`（全量待处理订单）、`recent_paid_amount`（最近 300 条订单中已付金额，分）和 `services_checked_at`。直接数据库聚合，不受客户/订单管理列表条数限制。远端不可用时保留最近成功状态并尽可能提供 `sync_warning`；未知状态不会算成有效购买用户。
 
 `PUT /admin/settings` 的 settings 新增 `catalog_guide_title`（至多 80 字）及 `catalog_guide_body`（至多 6000 字，可换行），沿用主管理员、CSRF、乐观版本及审计校验；留空恢复内置默认。`GET /admin/settings`、`GET /public` 和 `GET /catalog` 返回有效说明文字。游客、用户和管理员套餐预览共用，无 HTML 执行；公开可见套餐页每 10 秒刷新。仅控制展示文案，不修改购买、续费、计费或名额规则；无新增数据库迁移，兼容原 settings JSON。

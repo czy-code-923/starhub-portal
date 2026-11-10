@@ -13,7 +13,7 @@ var inviteCodePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
 func (a *App) manageInvitations(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	if r.Method == "GET" {
-		rows, e := a.DB.Query(ctx, `SELECT to_jsonb(x),i.sealed_code FROM invitations i CROSS JOIN LATERAL(SELECT i.id,i.version,i.prefix,i.email,i.enabled,i.starts_at,i.ends_at,i.max_uses,i.claimed,i.created_at)x ORDER BY i.created_at DESC LIMIT 200`)
+		rows, e := a.DB.Query(ctx, `SELECT to_jsonb(x),i.sealed_code FROM invitations i CROSS JOIN LATERAL(SELECT i.id,i.version,i.prefix,i.email,i.enabled,i.starts_at,i.ends_at,i.max_uses,i.claimed,GREATEST(0,i.max_uses-i.claimed) remaining_uses,(SELECT count(*) FROM invitation_claims ic WHERE ic.invitation_id=i.id AND ic.finalized AND NOT ic.released) verified_uses,(SELECT count(*) FROM invitation_claims ic WHERE ic.invitation_id=i.id AND NOT ic.finalized AND NOT ic.released) reserved_uses,i.created_at)x ORDER BY i.created_at DESC LIMIT 200`)
 		if e != nil {
 			return e
 		}
